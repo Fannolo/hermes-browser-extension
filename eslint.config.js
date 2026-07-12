@@ -35,6 +35,7 @@ export default [
         TextEncoder: 'readonly',
         TextDecoder: 'readonly',
         Blob: 'readonly',
+        ClipboardItem: 'readonly',
         File: 'readonly',
         FileList: 'readonly',
         FileReader: 'readonly',

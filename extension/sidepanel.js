@@ -636,13 +636,36 @@ function renderConnectionSecurity() {
   if (els.clearTokenButton) els.clearTokenButton.disabled = !summary.hasToken;
 }
 
-async function copySupportDiagnostics() {
-  if (!els.copyDiagnosticsButton) return;
+/**
+ * Write to the clipboard from work that has not finished yet.
+ *
+ * Safari drops transient user activation at the first `await`, so a
+ * navigator.clipboard.writeText() issued *after* async work throws
+ * NotAllowedError even though the call began in a click handler. The async
+ * ClipboardItem form is the sanctioned workaround: hand
+ * navigator.clipboard.write() a Promise<Blob> synchronously, inside the gesture,
+ * and Safari holds the activation open until that promise settles.
+ *
+ * Must be called synchronously from the event handler — do not await before it.
+ */
+function writeClipboardFromPromise(textPromise) {
+  if (isSafari() && typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+    const blob = textPromise.then((text) => new Blob([String(text ?? '')], { type: 'text/plain' }));
+    return navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+  }
+  return textPromise.then((text) => navigator.clipboard.writeText(String(text ?? '')));
+}
+
+function copySupportDiagnostics() {
+  if (!els.copyDiagnosticsButton) return Promise.resolve();
   const originalText = els.copyDiagnosticsButton.textContent || 'Copy Diagnostics';
   els.copyDiagnosticsButton.disabled = true;
   els.copyDiagnosticsButton.textContent = 'Copying...';
   if (els.diagnosticsCopyStatus) els.diagnosticsCopyStatus.textContent = 'Building redacted diagnostics...';
-  try {
+
+  // Build the report as a promise, but hand it to the clipboard synchronously
+  // below — awaiting here first would invalidate the gesture on Safari.
+  const markdownPromise = (async () => {
     const buildInfo = await loadExtensionBuildInfo().catch(() => ({}));
     const state = currentConnectionState();
     const diagnostics = buildSupportDiagnostics({
@@ -668,16 +691,56 @@ async function copySupportDiagnostics() {
       currentContext,
       extractorMode: currentContext?.pageContext?.source || 'extension-dom',
     });
-    await navigator.clipboard.writeText(diagnostics.markdown);
-    if (els.diagnosticsCopyStatus) els.diagnosticsCopyStatus.textContent = 'Copied redacted diagnostics. Paste them into the GitHub issue or support thread.';
-    setStatus('ok', 'Diagnostics copied', 'Redacted support diagnostics are on your clipboard.');
-  } catch (error) {
-    if (els.diagnosticsCopyStatus) els.diagnosticsCopyStatus.textContent = 'Could not copy diagnostics. Check browser clipboard permissions.';
-    setStatus('warn', 'Diagnostics copy failed', error?.message || String(error));
-  } finally {
-    els.copyDiagnosticsButton.disabled = false;
-    els.copyDiagnosticsButton.textContent = originalText;
+    return diagnostics.markdown;
+  })();
+
+  return writeClipboardFromPromise(markdownPromise)
+    .then(() => {
+      if (els.diagnosticsCopyStatus) els.diagnosticsCopyStatus.textContent = 'Copied redacted diagnostics. Paste them into the GitHub issue or support thread.';
+      setStatus('ok', 'Diagnostics copied', 'Redacted support diagnostics are on your clipboard.');
+    })
+    .catch(async (error) => {
+      // Clipboard refused us. Surface the report anyway so the diagnostics are
+      // still recoverable by hand — a blocked clipboard must not hide the data.
+      const markdown = await markdownPromise.catch(() => '');
+      if (markdown) showDiagnosticsFallback(markdown);
+      if (els.diagnosticsCopyStatus) {
+        els.diagnosticsCopyStatus.textContent = markdown
+          ? 'Clipboard blocked by the browser. The report is shown below — select it and copy manually.'
+          : 'Could not copy diagnostics. Check browser clipboard permissions.';
+      }
+      setStatus('warn', 'Diagnostics copy failed', error?.message || String(error));
+    })
+    .finally(() => {
+      els.copyDiagnosticsButton.disabled = false;
+      els.copyDiagnosticsButton.textContent = originalText;
+    });
+}
+
+/**
+ * Render the diagnostics into a selectable textarea when the clipboard is
+ * unavailable, so the user can still retrieve them (notably the extension
+ * origin, which is required to allowlist CORS on a remote Hermes).
+ */
+function showDiagnosticsFallback(markdown) {
+  const host = els.diagnosticsCopyStatus?.parentElement;
+  if (!host) return;
+  let area = host.querySelector('#diagnosticsFallbackText');
+  if (!area) {
+    area = document.createElement('textarea');
+    area.id = 'diagnosticsFallbackText';
+    area.readOnly = true;
+    area.rows = 12;
+    area.style.width = '100%';
+    area.style.marginTop = '8px';
+    area.style.fontFamily = 'monospace';
+    area.style.fontSize = '11px';
+    host.appendChild(area);
   }
+  area.value = markdown;
+  area.hidden = false;
+  area.focus();
+  area.select();
 }
 
 function ensureSidepanelInstanceId() {
