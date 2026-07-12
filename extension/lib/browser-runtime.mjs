@@ -14,8 +14,24 @@ const BROWSER_IDS = Object.freeze({
   UNKNOWN: 'unknown',
 });
 
+/**
+ * Safari serves extension pages from the safari-web-extension:// scheme. That is
+ * an exact signal, unlike the UA string: every Chromium UA also contains the
+ * token "Safari", and the MV3 service worker UA is not guaranteed to match the
+ * page UA. Check the scheme before falling back to UA sniffing.
+ */
+function hasSafariExtensionScheme() {
+  try {
+    const url = globalThis.chrome?.runtime?.getURL?.('') || globalThis.browser?.runtime?.getURL?.('') || '';
+    return url.startsWith('safari-web-extension://');
+  } catch {
+    return false;
+  }
+}
+
 function detectBrowserId() {
   const ua = (typeof navigator !== 'undefined' ? navigator.userAgent : '') || '';
+  if (hasSafariExtensionScheme()) return BROWSER_IDS.SAFARI;
   // Check UA first — more reliable than globalThis.opr which may not exist
   // in the MV3 service worker context even on Opera.
   if (/\bOPR\/|Opera\b/i.test(ua)) return BROWSER_IDS.OPERA;
@@ -24,6 +40,10 @@ function detectBrowserId() {
   if (/\bFirefox\b/i.test(ua)) return BROWSER_IDS.FIREFOX;
   if (/\bSafari\b/i.test(ua) && !/\bChrome\b/i.test(ua)) return BROWSER_IDS.SAFARI;
   return BROWSER_IDS.CHROMIUM;
+}
+
+function isSafari() {
+  return detectBrowserId() === BROWSER_IDS.SAFARI;
 }
 
 function getSidebarAction() {
@@ -145,6 +165,9 @@ async function setActionClickPanelBehavior() {
 function nativePanelMode() {
   if (hasChromeSidePanel()) return 'chrome-sidePanel';
   if (hasSidebarAction()) return 'sidebarAction';
+  // Safari has no sidebar API at all (neither chrome.sidePanel nor
+  // sidebar_action), so it always lands on the detached-window path.
+  if (detectBrowserId() === BROWSER_IDS.SAFARI) return 'extension-window';
   return 'extension-tab';
 }
 
@@ -154,6 +177,7 @@ export {
   getSidebarAction,
   hasChromeSidePanel,
   hasSidebarAction,
+  isSafari,
   openNativeSidebar,
   setActionClickPanelBehavior,
   nativePanelMode,

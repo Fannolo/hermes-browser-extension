@@ -3,6 +3,7 @@ node_modules/
 
 # Build outputs and release artifacts
 dist/
+build/
 artifacts/
 build-info.json
 extension/build-info.json

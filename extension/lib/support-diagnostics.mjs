@@ -5,7 +5,7 @@ export function browserFamilyFromUserAgent(userAgent = '') {
   if (/Edg\//.test(ua)) return 'Edge';
   if (/OPR\//.test(ua) || /Opera/i.test(ua)) return 'Opera';
   if (/Firefox\//.test(ua)) return 'Firefox (unsupported preview)';
-  if (/Safari\//.test(ua) && !/Chrome\//.test(ua) && !/Chromium\//.test(ua)) return 'Safari (unsupported preview)';
+  if (/Safari\//.test(ua) && !/Chrome\//.test(ua) && !/Chromium\//.test(ua)) return 'Safari';
   if (/Chrome\//.test(ua) || /Chromium\//.test(ua)) return 'Chrome';
   return NOT_AVAILABLE;
 }

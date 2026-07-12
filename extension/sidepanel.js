@@ -79,6 +79,7 @@ import {
   updateBrowserModelOptionScope,
 } from './lib/common.mjs';
 import { extractYouTubeVideoId } from './lib/transcript.mjs';
+import { isSafari } from './lib/browser-runtime.mjs';
 import { buildDashboardWsUrl, createGatewayClient, WS_EVENTS, WS_METHODS } from './lib/gateway-ws.mjs';
 import {
   dashboardTrustPrompt,
@@ -1654,6 +1655,9 @@ function chromePermissionCall(method, details) {
 }
 
 async function ensureExtensionAudioPermission() {
+  // See voice-dictation.js: Safari has no `audioCapture` permission and grants
+  // the microphone per-origin via getUserMedia() instead.
+  if (isSafari()) return true;
   const permissions = globalThis.chrome?.permissions;
   if (!permissions) return true;
   const details = { permissions: ['audioCapture'] };

@@ -151,10 +151,13 @@ async function openHermesPanel(tab) {
     console.warn('[Hermes Browser] Side panel open failed:', error);
   }
 
-  // Opera/Firefox: open as a narrow popup window that acts like a sidebar panel.
-  // Opera's sidebarAction API is not available in MV3, so we use windows.create
-  // with type: popup, a narrow width, and leftmost position.
-  if (browserId === 'opera' || browserId === 'firefox') {
+  // Opera/Firefox/Safari: open as a narrow popup window that acts like a
+  // sidebar panel. None of these expose a usable MV3 side-panel API
+  // (Safari supports neither chrome.sidePanel nor sidebar_action), so we use
+  // windows.create with type: popup, a narrow width, and leftmost position.
+  // A detached window — not an action popover — is deliberate: the panel must
+  // survive clicks on the page for the element-picker flow.
+  if (browserId === 'opera' || browserId === 'firefox' || browserId === 'safari') {
     try {
       await chrome.windows.create({
         url: chrome.runtime.getURL(panelPath),

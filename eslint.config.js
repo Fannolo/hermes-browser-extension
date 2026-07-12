@@ -95,6 +95,7 @@ export default [
   {
     ignores: [
       'dist/',
+      'build/',
       'artifacts/',
       'node_modules/',
       '.gitnexus/',

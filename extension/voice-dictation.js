@@ -9,6 +9,7 @@ import {
   DEFAULT_GATEWAY_CAPABILITIES,
   normalizeGatewayCapabilities,
 } from './lib/capabilities.mjs';
+import { isSafari } from './lib/browser-runtime.mjs';
 
 const startButton = document.getElementById('startVoiceButton');
 const settingsButton = document.getElementById('openMicSettingsButton');
@@ -69,6 +70,11 @@ function chromePermissionCall(method, details) {
 }
 
 async function ensureExtensionAudioPermission() {
+  // Safari has no `audioCapture` permission. It grants microphone access
+  // per-origin, in response to getUserMedia(). Requesting an unknown permission
+  // here rejects and would block dictation that otherwise works fine — so skip
+  // straight to getUserMedia and let Safari run its own prompt.
+  if (isSafari()) return true;
   const permissions = globalThis.chrome?.permissions;
   if (!permissions) return true;
   const details = { permissions: ['audioCapture'] };
