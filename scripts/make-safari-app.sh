@@ -50,6 +50,43 @@ xcrun safari-web-extension-converter dist/safari \
 # stale: Safari 16.4+ supports ES-module service workers ("type": "module").
 # Our manifest floor is 16.4, so it is safe to ignore.
 
+echo "==> 2b/3  Granting the extension outgoing-network access"
+# safari-web-extension-converter sandboxes BOTH targets but sets
+# ENABLE_OUTGOING_NETWORK_CONNECTIONS only on the *containing app*, never on the
+# .appex. The extension is the thing that actually calls fetch(), so without this
+# every request from the panel is silently killed by the App Sandbox — the
+# gateway looks unreachable even though curl to the same URL works fine.
+# There is no converter flag for this, so patch the generated project.
+python3 - "$PROJECT_DIR/$APP_NAME/$APP_NAME.xcodeproj/project.pbxproj" <<'PY'
+import re, sys
+
+path = sys.argv[1]
+src = open(path).read()
+
+def patch(block):
+    body = block.group(1)
+    # Only the extension target — identified by its .Extension bundle id.
+    if '.Extension' not in body:
+        return block.group(0)
+    if 'ENABLE_OUTGOING_NETWORK_CONNECTIONS' in body:
+        return block.group(0)
+    body = body.replace(
+        'ENABLE_APP_SANDBOX = YES;',
+        'ENABLE_APP_SANDBOX = YES;\n\t\t\t\tENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;',
+        1,
+    )
+    return 'buildSettings = {' + body + '};'
+
+out = re.sub(r'buildSettings = \{(.*?)\};', patch, src, flags=re.S)
+
+n = out.count('ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;')
+if n < 4:  # app Debug+Release + extension Debug+Release
+    sys.exit(f'FAILED to patch network entitlement (found {n}, expected >=4)')
+
+open(path, 'w').write(out)
+print(f'  patched: ENABLE_OUTGOING_NETWORK_CONNECTIONS now set on {n} configs')
+PY
+
 echo "==> 3/3  Building the app (ad-hoc signed)"
 rm -rf "$DERIVED"
 xcodebuild \
