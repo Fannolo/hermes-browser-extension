@@ -13,9 +13,11 @@ import {
 import {
   canInjectSidebar,
   DEFAULT_SIDEBAR_PRESENTATION,
+  normalizeOpenTabIds,
   normalizeSidebarPresentation,
   READY_TIMEOUT_MS as SIDEBAR_READY_TIMEOUT_MS,
   SIDEBAR_MESSAGES,
+  SIDEBAR_OPEN_TABS_KEY,
   SIDEBAR_PRESENTATION,
 } from './lib/injected-sidebar.mjs';
 
@@ -140,15 +142,87 @@ async function injectedSidebarPreferred() {
  * The timeout guards the last case: chrome.tabs.sendMessage rejects when there
  * is no receiver, but hangs if a receiver exists and never responds.
  */
-async function sendSidebarToggle(tabId, panelPath) {
+// --- Sidebar-open tracking ---------------------------------------------------
+// An injected sidebar lives in the page, so navigating destroys it. Remember
+// which tabs had it open and restore it once the new document is ready — without
+// this the sidebar disappears on every link click, which is the standard
+// complaint about this technique. Persisted, because the MV3 service worker is
+// evicted freely and in-memory state would not survive.
+
+async function openSidebarTabs() {
+  try {
+    const stored = await chrome.storage.local.get([SIDEBAR_OPEN_TABS_KEY]);
+    return new Set(normalizeOpenTabIds(stored?.[SIDEBAR_OPEN_TABS_KEY]));
+  } catch {
+    return new Set();
+  }
+}
+
+async function setSidebarOpenForTab(tabId, open) {
+  const cleanTabId = Number(tabId);
+  if (!Number.isFinite(cleanTabId) || cleanTabId <= 0) return;
+  try {
+    const tabs = await openSidebarTabs();
+    if (open) tabs.add(cleanTabId);
+    else tabs.delete(cleanTabId);
+    await chrome.storage.local.set({ [SIDEBAR_OPEN_TABS_KEY]: Array.from(tabs) });
+  } catch {
+    /* best-effort: losing this only costs an auto-restore */
+  }
+}
+
+async function sendSidebarToggle(tabId, panelPath, { ensure = false } = {}) {
   return Promise.race([
     chrome.tabs.sendMessage(tabId, {
-      type: SIDEBAR_MESSAGES.TOGGLE,
+      type: ensure ? SIDEBAR_MESSAGES.ENSURE : SIDEBAR_MESSAGES.TOGGLE,
       url: chrome.runtime.getURL(panelPath),
     }),
     new Promise((resolve) => setTimeout(() => resolve(null), SIDEBAR_MOUNT_TIMEOUT_MS)),
   ]);
 }
+
+/** Restore the sidebar after a navigation, if this tab had it open. */
+async function restoreSidebarAfterNavigation(tabId, tab) {
+  if (detectBrowserId() !== BROWSER_IDS.SAFARI) return;
+  if (!canInjectSidebar(tab?.url)) return;
+  if (!await injectedSidebarPreferred()) return;
+
+  const tabs = await openSidebarTabs();
+  if (!tabs.has(Number(tabId))) return;
+
+  const panelPath = buildSidePanelPath({
+    mode: cachedPanelResidencyMode,
+    tabId,
+    defaultPath: defaultSidePanelPath(),
+  });
+  try {
+    const response = await sendSidebarToggle(tabId, panelPath, { ensure: true });
+    if (!response?.ok) {
+      // The new page refuses the sidebar (CSP). Stop trying for this tab rather
+      // than popping a window the user never asked for on every navigation.
+      await setSidebarOpenForTab(tabId, false);
+    }
+  } catch {
+    await setSidebarOpenForTab(tabId, false);
+  }
+}
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete') return;
+  restoreSidebarAfterNavigation(tabId, tab)
+    .catch((error) => console.warn('[Hermes Browser] Could not restore the sidebar:', error));
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  setSidebarOpenForTab(tabId, false).catch(() => {});
+});
+
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (message?.type === SIDEBAR_MESSAGES.CLOSED) {
+    setSidebarOpenForTab(sender?.tab?.id, false).catch(() => {});
+  }
+  return false;
+});
 
 async function tryInjectedSidebar(tab, panelPath) {
   const tabId = Number(tab?.id);
@@ -160,7 +234,12 @@ async function tryInjectedSidebar(tab, panelPath) {
 
   try {
     const response = await sendSidebarToggle(tabId, panelPath);
-    if (response?.ok) return true;
+    if (response?.ok) {
+      // `mounted: false` means the user toggled it closed — remember that, or we
+      // would helpfully resurrect it on their next navigation.
+      await setSidebarOpenForTab(tabId, response.mounted !== false);
+      return true;
+    }
     if (response?.blocked) {
       console.info('[Hermes Browser] Page CSP blocked the sidebar iframe; using a window instead.');
       return false;
@@ -180,6 +259,7 @@ async function tryInjectedSidebar(tab, panelPath) {
     }
     try {
       const retry = await sendSidebarToggle(tabId, panelPath);
+      if (retry?.ok) await setSidebarOpenForTab(tabId, retry.mounted !== false);
       return Boolean(retry?.ok);
     } catch {
       return false;

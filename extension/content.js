@@ -461,8 +461,10 @@ function cancelPickMode() {
 // asserts the two copies stay in sync.
 const SIDEBAR_MESSAGES = Object.freeze({
   TOGGLE: 'HERMES_TOGGLE_SIDEBAR',
+  ENSURE: 'HERMES_ENSURE_SIDEBAR',
   READY: 'HERMES_SIDEBAR_READY',
   CLOSE: 'HERMES_SIDEBAR_CLOSE',
+  CLOSED: 'HERMES_SIDEBAR_CLOSED',
 });
 const SIDEBAR_HOST_ID = 'hermes-browser-sidebar-host';
 const SIDEBAR_READY_TIMEOUT_MS = 2500;
@@ -578,11 +580,19 @@ function mountSidebar(panelUrl, width) {
       if (event.source !== iframe.contentWindow) return;
       const type = event.data?.type;
       if (type === SIDEBAR_MESSAGES.READY) finish({ ok: true, mounted: true });
-      if (type === SIDEBAR_MESSAGES.CLOSE) unmountSidebar();
+      if (type === SIDEBAR_MESSAGES.CLOSE) {
+        unmountSidebar();
+        reportSidebarClosed();
+      }
     };
     window.addEventListener('message', onPanelMessage);
 
-    closeButton.addEventListener('click', () => unmountSidebar());
+    // Closing is a deliberate act: tell the background, or it would restore the
+    // sidebar on the next navigation.
+    closeButton.addEventListener('click', () => {
+      unmountSidebar();
+      reportSidebarClosed();
+    });
 
     // Drag-to-resize. Pointer capture keeps events coming while the cursor is
     // over the iframe, which would otherwise swallow them.
@@ -619,15 +629,36 @@ function mountSidebar(panelUrl, width) {
   });
 }
 
+/** Tell the background the sidebar is gone, so it stops restoring it on navigation. */
+function reportSidebarClosed() {
+  try {
+    const result = chrome.runtime.sendMessage({ type: SIDEBAR_MESSAGES.CLOSED });
+    if (result && typeof result.catch === 'function') result.catch(() => {});
+  } catch {
+    /* best-effort */
+  }
+}
+
 async function toggleSidebar(panelUrl) {
-  if (unmountSidebar()) return { ok: true, mounted: false };
+  if (unmountSidebar()) {
+    reportSidebarClosed();
+    return { ok: true, mounted: false };
+  }
+  if (!panelUrl) return { ok: false, error: 'missing panel url' };
+  return mountSidebar(panelUrl, await storedSidebarWidth());
+}
+
+/** Mount if absent; a no-op if already there. Used to restore after a navigation. */
+async function ensureSidebar(panelUrl) {
+  if (sidebarHost()) return { ok: true, mounted: true };
   if (!panelUrl) return { ok: false, error: 'missing panel url' };
   return mountSidebar(panelUrl, await storedSidebarWidth());
 }
 
 const messageListener = (message, _sender, sendResponse) => {
-  if (message?.type === SIDEBAR_MESSAGES.TOGGLE) {
-    toggleSidebar(message.url)
+  if (message?.type === SIDEBAR_MESSAGES.TOGGLE || message?.type === SIDEBAR_MESSAGES.ENSURE) {
+    const run = message.type === SIDEBAR_MESSAGES.ENSURE ? ensureSidebar : toggleSidebar;
+    run(message.url)
       .then(sendResponse)
       .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
     return true;

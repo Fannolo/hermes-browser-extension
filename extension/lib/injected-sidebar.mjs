@@ -25,11 +25,33 @@
 export const SIDEBAR_MESSAGES = Object.freeze({
   /** background -> content script: mount, or unmount if already mounted. */
   TOGGLE: 'HERMES_TOGGLE_SIDEBAR',
+  /** background -> content script: mount if absent; a no-op if already mounted. */
+  ENSURE: 'HERMES_ENSURE_SIDEBAR',
   /** iframe -> content script (window.postMessage): the panel really loaded. */
   READY: 'HERMES_SIDEBAR_READY',
   /** iframe -> content script (window.postMessage): user asked to close. */
   CLOSE: 'HERMES_SIDEBAR_CLOSE',
+  /** content script -> background: the user closed the sidebar from the page. */
+  CLOSED: 'HERMES_SIDEBAR_CLOSED',
 });
+
+/**
+ * Tabs whose sidebar is open, so it can be restored after a navigation.
+ *
+ * An injected sidebar lives in the page, so navigating destroys it — the usual
+ * complaint about this technique, and what makes it feel like a hack rather than
+ * a sidebar. Remembering which tabs had it open lets the background script
+ * re-mount it once the new document is ready. Stored rather than kept in memory
+ * because the MV3 service worker is evicted freely.
+ */
+export const SIDEBAR_OPEN_TABS_KEY = 'hermesBrowserSidebarOpenTabs';
+
+export function normalizeOpenTabIds(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+}
 
 export const SIDEBAR_HOST_ID = 'hermes-browser-sidebar-host';
 
