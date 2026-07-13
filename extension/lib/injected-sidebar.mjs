@@ -3,19 +3,18 @@
  *
  * Safari implements no sidebar API — neither chrome.sidePanel (Chromium-only)
  * nor sidebar_action (Firefox-only). The detached window in background.js works
- * everywhere but does not feel like a sidebar. The injected sidebar mounts
- * sidepanel.html in an iframe pinned to the right edge of the page instead.
+ * everywhere but does not feel like a sidebar. The injected sidebar mounts a
+ * persistent Shadow DOM host pinned to the right edge of the page instead. Its
+ * open class uses the same off-canvas lifecycle as direct-DOM Safari sidebars.
  *
- * It cannot replace the detached window, only sit in front of it:
+ * It cannot replace the detached-window fallback on every page:
  *   - the content script only runs on http/https, so the Safari start page,
  *     PDFs, and about: pages have no sidebar to inject into;
- *   - a page's Content-Security-Policy `frame-src` can refuse our iframe.
+ *   - a browser can still refuse the extension document on a restricted page.
  *
- * Both cases fall back to the detached window. Blocked frames are detected with
- * an explicit handshake (READY), not an iframe load event: a CSP-blocked frame
- * can still fire `load` for about:blank, so `load` cannot distinguish "mounted"
- * from "blocked". If READY does not arrive within READY_TIMEOUT_MS we treat the
- * mount as failed and fall back.
+ * READY is diagnostic only. Safari can wrap WindowProxy objects differently
+ * across its page and extension worlds, so a missed handshake must never delete
+ * a visible sidebar or trigger a detached window.
  *
  * content.js is a classic content script and cannot import this module, so it
  * mirrors these values literally. tests/injected-sidebar.test.mjs asserts the
@@ -23,7 +22,7 @@
  */
 
 export const SIDEBAR_MESSAGES = Object.freeze({
-  /** background -> content script: mount, or unmount if already mounted. */
+  /** background -> content script: open, or slide closed if already open. */
   TOGGLE: 'HERMES_TOGGLE_SIDEBAR',
   /** background -> content script: mount if absent; a no-op if already mounted. */
   ENSURE: 'HERMES_ENSURE_SIDEBAR',
@@ -55,7 +54,7 @@ export function normalizeOpenTabIds(value) {
 
 export const SIDEBAR_HOST_ID = 'hermes-browser-sidebar-host';
 
-/** How long to wait for the READY handshake before declaring the frame blocked. */
+/** How long to wait before logging a missing READY diagnostic. */
 export const READY_TIMEOUT_MS = 2500;
 
 export const SIDEBAR_WIDTH = Object.freeze({
@@ -66,7 +65,7 @@ export const SIDEBAR_WIDTH = Object.freeze({
 });
 
 export const SIDEBAR_PRESENTATION = Object.freeze({
-  /** In-page iframe pinned to the right edge; falls back to WINDOW on failure. */
+  /** Persistent in-page Shadow host pinned to the right edge. */
   INJECTED: 'injected',
   /** Always use the detached narrow window. */
   WINDOW: 'window',

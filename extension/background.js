@@ -20,9 +20,13 @@ import {
   SIDEBAR_OPEN_TABS_KEY,
   SIDEBAR_PRESENTATION,
 } from './lib/injected-sidebar.mjs';
+import {
+  canRelayTabMessage,
+  TAB_MESSAGE_RELAY,
+} from './lib/tab-messaging.mjs';
 
-// Allow the content script's own READY timeout to elapse before we give up on
-// it, otherwise we would race it and fall back while the mount is still viable.
+// The content script acknowledges mounts synchronously. Keep a defensive upper
+// bound for missing/stale content scripts so toolbar clicks never hang forever.
 const SIDEBAR_MOUNT_TIMEOUT_MS = SIDEBAR_READY_TIMEOUT_MS + 1500;
 import {
   normalizeTranscriptPayload,
@@ -137,10 +141,9 @@ async function injectedSidebarPreferred() {
  * Ask the content script to mount (or unmount) the in-page sidebar.
  *
  * Returns false — meaning "fall back to the detached window" — when the tab has
- * no content script (Safari start page, PDF, about:, another extension), when
- * the page's CSP blocked our iframe, or when the content script never answers.
- * The timeout guards the last case: chrome.tabs.sendMessage rejects when there
- * is no receiver, but hangs if a receiver exists and never responds.
+ * no content script (Safari start page, PDF, about:, another extension), or when
+ * a stale content script never answers. A mounted page sidebar acknowledges the
+ * request immediately; READY is diagnostic and does not gate success.
  */
 // --- Sidebar-open tracking ---------------------------------------------------
 // An injected sidebar lives in the page, so navigating destroys it. Remember
@@ -217,9 +220,21 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   setSidebarOpenForTab(tabId, false).catch(() => {});
 });
 
-chrome.runtime.onMessage.addListener((message, sender) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === SIDEBAR_MESSAGES.CLOSED) {
     setSidebarOpenForTab(sender?.tab?.id, false).catch(() => {});
+    return false;
+  }
+  if (message?.type === TAB_MESSAGE_RELAY) {
+    if (!canRelayTabMessage(message.tabId, message.payload)) {
+      sendResponse({ ok: false, error: 'Invalid tab-message relay request.' });
+      return false;
+    }
+    chrome.tabs.sendMessage(Number(message.tabId), message.payload).then(
+      (response) => sendResponse({ ok: true, response }),
+      (error) => sendResponse({ ok: false, error: error?.message || String(error) }),
+    );
+    return true;
   }
   return false;
 });
@@ -240,35 +255,19 @@ async function tryInjectedSidebar(tab, panelPath) {
       await setSidebarOpenForTab(tabId, response.mounted !== false);
       return true;
     }
-    if (response?.blocked) {
-      console.info('[Hermes Browser] Page CSP blocked the sidebar iframe; using a window instead.');
-      return false;
-    }
     if (response) return false;
     console.warn('[Hermes Browser] Sidebar mount timed out; using a window instead.');
     return false;
-  } catch {
-    // No receiver: this tab was loaded before the extension was installed or
-    // updated, so it is still running an old content script — or none at all.
-    // Inject it now rather than making the user reload the page.
-    //
-    // This is safe *here* precisely because sendSidebarToggle above already
-    // failed: on Safari executeScript reloads the target page to inject, so it
-    // must never run against a tab whose content script is alive — it would
-    // reload the page out from under a sidebar that was about to mount.
-    try {
-      await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-    } catch (injectError) {
-      console.info('[Hermes Browser] Could not inject the content script; using a window.', injectError?.message || injectError);
-      return false;
-    }
-    try {
-      const retry = await sendSidebarToggle(tabId, panelPath);
-      if (retry?.ok) await setSidebarOpenForTab(tabId, retry.mounted !== false);
-      return Boolean(retry?.ok);
-    } catch {
-      return false;
-    }
+  } catch (error) {
+    // The manifest content script is the only safe sidebar host on Safari.
+    // Programmatic injection can reload the tab, and an async response-channel
+    // failure can happen after the sidebar has already started mounting. Never
+    // turn either case into an unexpected page reload.
+    console.info(
+      '[Hermes Browser] Static content script unavailable; using a window without reloading the page.',
+      error?.message || error,
+    );
+    return false;
   }
 }
 

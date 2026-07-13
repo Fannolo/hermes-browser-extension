@@ -13,6 +13,12 @@ import {
   SIDEBAR_PRESENTATION,
   SIDEBAR_WIDTH,
 } from '../extension/lib/injected-sidebar.mjs';
+import {
+  canRelayTabMessage,
+  isEmbeddedSafariPanel,
+  sendTabMessage,
+  TAB_MESSAGE_RELAY,
+} from '../extension/lib/tab-messaging.mjs';
 
 const contentSource = readFileSync(new URL('../extension/content.js', import.meta.url), 'utf8');
 const backgroundSource = readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8');
@@ -21,9 +27,8 @@ const panelHtml = readFileSync(new URL('../extension/sidepanel.html', import.met
 
 // --- The duplicated contract ------------------------------------------------
 // content.js is a classic content script and cannot import the module, so it
-// re-declares these values. If the two ever drift, the sidebar silently stops
-// mounting and every Safari user falls back to the detached window with no
-// error. Pin them.
+// re-declares these values. If the two ever drift, the sidebar can stop
+// mounting. Pin them.
 
 test('content.js mirrors the sidebar message names exactly', () => {
   for (const value of Object.values(SIDEBAR_MESSAGES)) {
@@ -49,16 +54,16 @@ test('content.js mirrors the width bounds', () => {
   assert.ok(contentSource.includes(SIDEBAR_WIDTH.STORAGE_KEY), 'width storage key must match');
 });
 
-// --- Blocked-frame detection ------------------------------------------------
+// --- Persistent host lifecycle ---------------------------------------------
 
-test('the panel announces READY to its parent so a blocked frame can be told from a live one', () => {
+test('the panel announces READY to its parent for diagnostics', () => {
   assert.match(readySource, /HERMES_SIDEBAR_READY/);
   assert.match(readySource, /parent\.postMessage/);
 });
 
 test('the handshake loads before sidepanel.js so a panel startup error cannot suppress it', () => {
   // If the ping lived inside sidepanel.js, any throw in its import graph or init
-  // would time out the mount and silently demote the user to a detached window.
+  // would suppress useful diagnostics.
   // Match the src attributes, not bare filenames — prose in comments would
   // otherwise satisfy the ordering check.
   const readyAt = panelHtml.indexOf('src="sidebar-ready.js"');
@@ -74,20 +79,33 @@ test('the handshake re-announces on DOMContentLoaded and load', () => {
   assert.match(readySource, /'load'/);
 });
 
-test('content.js falls back on timeout rather than trusting the iframe load event', () => {
-  // A CSP-blocked frame still fires `load` for about:blank, so a load handler
-  // would report success for a frame that never rendered the panel.
-  assert.match(contentSource, /blocked:\s*true/, 'must report blocked on timeout');
+test('a missed READY handshake never removes the mounted sidebar', () => {
+  const timeoutAt = contentSource.indexOf('const readyTimer = setTimeout');
+  const timeoutEnd = contentSource.indexOf('\n  }, SIDEBAR_READY_TIMEOUT_MS);', timeoutAt);
+  const timeoutBody = contentSource.slice(timeoutAt, timeoutEnd);
+  assert.match(timeoutBody, /keeping the mounted sidebar open/);
+  assert.doesNotMatch(timeoutBody, /destroySidebar|\.remove\(\)|blocked:\s*true/);
   assert.ok(
     !/iframe\.addEventListener\(\s*['"]load['"]/.test(contentSource),
-    'must not treat the iframe load event as proof the panel mounted',
+    'must not treat the iframe load event as proof of READY',
   );
 });
 
-test('content.js verifies postMessage by source, not origin', () => {
-  // The extension origin differs per install on Safari, and a blocked frame can
-  // report a null origin — so origin checks are the wrong tool here.
-  assert.match(contentSource, /event\.source !== iframe\.contentWindow/);
+test('content.js uses an off-canvas class transition and keeps the host mounted', () => {
+  assert.match(contentSource, /SIDEBAR_OPEN_CLASS = 'hermes-sidebar-open'/);
+  assert.match(contentSource, /translate3d\(100%, 0, 0\)/);
+  assert.match(contentSource, /cubic-bezier\(\.16, 1, \.3, 1\)/);
+  assert.match(contentSource, /classList\.toggle\(SIDEBAR_OPEN_CLASS, open\)/);
+  assert.match(contentSource, /current conversation/);
+});
+
+test('sidebar toggle responds synchronously instead of holding Safari message channels open', () => {
+  const start = contentSource.indexOf("if (message?.type === SIDEBAR_MESSAGES.TOGGLE");
+  const end = contentSource.indexOf("if (message?.type === 'HERMES_GET_PAGE_CONTEXT'", start);
+  const body = contentSource.slice(start, end);
+  assert.match(body, /sendResponse\(run\(message\.url\)\)/);
+  assert.doesNotMatch(body, /\.then\(sendResponse\)/);
+  assert.match(body, /return false/);
 });
 
 // --- Fallback wiring --------------------------------------------------------
@@ -102,8 +120,7 @@ test('background falls through to the detached window when injection fails', () 
   assert.match(backgroundSource, /windows\.create/);
 });
 
-test('background gives the content script longer than its own READY timeout', () => {
-  // Racing the content script's timeout would abandon a mount that is still viable.
+test('background has a defensive mount response timeout', () => {
   assert.match(backgroundSource, /SIDEBAR_READY_TIMEOUT_MS \+ \d+/);
 });
 
@@ -149,11 +166,12 @@ test('the presentation setting ships with a default', async () => {
   );
 });
 
-test('background injects the content script on demand instead of requiring a page reload', () => {
-  // Tabs opened before the extension was installed/updated have a stale content
-  // script or none. Reloading must not be the user's job.
-  assert.match(backgroundSource, /chrome\.scripting\.executeScript\(\{ target: \{ tabId \}, files: \['content\.js'\] \}\)/);
-  assert.match(backgroundSource, /const retry = await sendSidebarToggle\(tabId, panelPath\)/);
+test('background never dynamically injects the Safari sidebar content script', () => {
+  const start = backgroundSource.indexOf('async function tryInjectedSidebar');
+  const end = backgroundSource.indexOf('\nasync function openHermesPanel', start);
+  const body = backgroundSource.slice(start, end);
+  assert.doesNotMatch(body, /chrome\.scripting\.executeScript/);
+  assert.match(body, /without reloading the page/);
 });
 
 test('content.js is safe to inject twice', () => {
@@ -181,7 +199,7 @@ test('the Safari build keeps web_accessible_resources', () => {
   );
 });
 
-test('the panel pings before injecting the content script', () => {
+test('the panel pings through the tab-message abstraction before injecting', () => {
   // On Safari chrome.scripting.executeScript({files}) RELOADS the target page to
   // perform the injection. When the panel runs inside the injected sidebar, the
   // target tab is the page hosting it — so a blind inject reloads the host page,
@@ -189,7 +207,7 @@ test('the panel pings before injecting the content script', () => {
   const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
   const ensure = panel.slice(panel.indexOf('async function ensureContentScript'));
   const body = ensure.slice(0, ensure.indexOf('\n}\n') + 3);
-  const pingAt = body.indexOf("type: 'HERMES_PING'");
+  const pingAt = body.indexOf("sendTabMessage(tabId, { type: 'HERMES_PING' })");
   const injectAt = body.indexOf('executeScript');
   assert.ok(pingAt > -1, 'ensureContentScript must ping the content script first');
   assert.ok(injectAt > -1, 'ensureContentScript must still be able to inject');
@@ -199,4 +217,71 @@ test('the panel pings before injecting the content script', () => {
 test('the content script answers the ping', () => {
   assert.match(contentSource, /message\?\.type === 'HERMES_PING'/);
   assert.match(contentSource, /sendResponse\(\{ ok: true, version: CONTENT_SCRIPT_VERSION \}\)/);
+});
+
+test('embedded Safari panels are detected without UA sniffing', () => {
+  const top = {};
+  assert.equal(isEmbeddedSafariPanel({ safari: true, parentWindow: {}, currentWindow: top }), true);
+  assert.equal(isEmbeddedSafariPanel({ safari: true, parentWindow: top, currentWindow: top }), false);
+  assert.equal(isEmbeddedSafariPanel({ safari: false, parentWindow: {}, currentWindow: top }), false);
+});
+
+test('the Safari iframe relays content messages through the background worker', async () => {
+  const calls = [];
+  const chromeApi = {
+    runtime: {
+      sendMessage: async (message) => {
+        calls.push(['runtime', message]);
+        return { ok: true, response: { ok: true, source: 'content-script' } };
+      },
+    },
+    tabs: {
+      sendMessage: async (...args) => {
+        calls.push(['tabs', args]);
+        return null;
+      },
+    },
+  };
+  const response = await sendTabMessage(42, { type: 'HERMES_PING' }, { chromeApi, embeddedSafari: true });
+  assert.deepEqual(response, { ok: true, source: 'content-script' });
+  assert.deepEqual(calls, [[
+    'runtime',
+    { type: TAB_MESSAGE_RELAY, tabId: 42, payload: { type: 'HERMES_PING' } },
+  ]]);
+});
+
+test('ordinary extension pages keep direct tab messaging', async () => {
+  const calls = [];
+  const chromeApi = {
+    runtime: { sendMessage: async () => null },
+    tabs: {
+      sendMessage: async (...args) => {
+        calls.push(args);
+        return { ok: true };
+      },
+    },
+  };
+  assert.deepEqual(
+    await sendTabMessage(7, { type: 'HERMES_PING' }, { chromeApi, embeddedSafari: false }),
+    { ok: true },
+  );
+  assert.deepEqual(calls, [[7, { type: 'HERMES_PING' }]]);
+});
+
+test('the background relay accepts only known content-script messages', () => {
+  assert.equal(canRelayTabMessage(1, { type: 'HERMES_GET_PAGE_CONTEXT' }), true);
+  assert.equal(canRelayTabMessage(1, { type: 'HERMES_START_ELEMENT_PICK' }), true);
+  assert.equal(canRelayTabMessage(0, { type: 'HERMES_PING' }), false);
+  assert.equal(canRelayTabMessage(1, { type: 'UNKNOWN' }), false);
+  assert.match(backgroundSource, /message\?\.type === TAB_MESSAGE_RELAY/);
+});
+
+test('embedded Safari context fallback never calls executeScript', () => {
+  const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  const start = panel.indexOf('async function getPageContextViaScripting');
+  const end = panel.indexOf('\nasync function getPageContext', start);
+  const body = panel.slice(start, end);
+  const guardAt = body.indexOf('if (isEmbeddedSafariPanel())');
+  const injectAt = body.indexOf('chrome.scripting.executeScript');
+  assert.ok(guardAt > -1 && injectAt > guardAt, 'Safari guard must precede executeScript');
 });

@@ -1,13 +1,10 @@
 /**
- * Wrapped in an IIFE so the script can be injected more than once into the same
- * tab. background.js injects it on demand for tabs that were open before the
- * extension loaded; without a fresh scope, re-running the file would redeclare
- * its top-level consts and throw a SyntaxError, leaving the new listener
- * unregistered — the sidebar would then silently time out and fall back to a
- * detached window. The listener swap below dedupes the handlers themselves.
+ * Wrapped in an IIFE so development reinjection cannot redeclare top-level
+ * bindings. Production Safari uses this manifest content script only; dynamic
+ * injection can reload the host page and is deliberately avoided.
  */
 (() => {
-const CONTENT_SCRIPT_VERSION = '2026-07-06-element-picker-classic';
+const CONTENT_SCRIPT_VERSION = '2026-07-13-persistent-sidebar';
 const previousListener = globalThis.__HERMES_BROWSER_CONTENT_LISTENER__;
 if (previousListener) {
   try {
@@ -464,10 +461,11 @@ function cancelPickMode() {
 }
 
 // --- Injected sidebar -------------------------------------------------------
-// Safari has no sidebar API, so mount sidepanel.html in an iframe pinned to the
-// right edge of the page. Mirrors extension/lib/injected-sidebar.mjs — this is a
-// classic content script and cannot import it. tests/injected-sidebar.test.mjs
-// asserts the two copies stay in sync.
+// Safari has no sidebar API, so mount sidepanel.html inside a Shadow DOM host
+// pinned to the right edge of the page. The host follows the same durable
+// off-canvas pattern used by Safari userscript sidebars: it stays mounted and an
+// open class controls the slide animation. Mirrors extension/lib/injected-sidebar.mjs
+// — this is a classic content script and cannot import it.
 const SIDEBAR_MESSAGES = Object.freeze({
   TOGGLE: 'HERMES_TOGGLE_SIDEBAR',
   ENSURE: 'HERMES_ENSURE_SIDEBAR',
@@ -476,7 +474,9 @@ const SIDEBAR_MESSAGES = Object.freeze({
   CLOSED: 'HERMES_SIDEBAR_CLOSED',
 });
 const SIDEBAR_HOST_ID = 'hermes-browser-sidebar-host';
+const SIDEBAR_OPEN_CLASS = 'hermes-sidebar-open';
 const SIDEBAR_READY_TIMEOUT_MS = 2500;
+const SIDEBAR_ANIMATION_MS = 300;
 const SIDEBAR_WIDTH = Object.freeze({
   DEFAULT: 420,
   MIN: 320,
@@ -494,9 +494,24 @@ function sidebarHost() {
   return document.getElementById(SIDEBAR_HOST_ID);
 }
 
-function unmountSidebar() {
-  const host = sidebarHost();
+function sidebarIsOpen(host = sidebarHost()) {
+  return Boolean(host?.classList.contains(SIDEBAR_OPEN_CLASS));
+}
+
+function setSidebarOpen(host, open) {
   if (!host) return false;
+  host.classList.toggle(SIDEBAR_OPEN_CLASS, open);
+  host.setAttribute('aria-hidden', String(!open));
+  return open;
+}
+
+function destroySidebar(host = sidebarHost()) {
+  if (!host) return false;
+  try {
+    host.__hermesSidebarCleanup?.();
+  } catch {
+    /* best-effort */
+  }
   host.remove();
   return true;
 }
@@ -524,133 +539,161 @@ function persistSidebarWidth(width) {
 }
 
 /**
- * Mount the panel as an in-page sidebar.
+ * Mount the panel as an in-page sidebar and acknowledge it immediately.
  *
- * Resolves { ok: true } only once the panel confirms it actually loaded. A page
- * whose CSP `frame-src` forbids our iframe can still fire a `load` event (for
- * about:blank), so a load event alone cannot tell "mounted" from "blocked" —
- * we require an explicit READY handshake from the panel instead, and treat the
- * timeout as blocked so the caller can fall back to the detached window.
+ * Safari can deliver extension-frame postMessage events through a different JS
+ * world, which makes event.source identity unreliable. Waiting for READY before
+ * answering the toolbar click caused a healthy, visible panel to be removed and
+ * replaced by a window. READY is now diagnostic only; a missed handshake never
+ * destroys a sidebar the user can already see.
  */
-function mountSidebar(panelUrl, width) {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
-      window.removeEventListener('message', onPanelMessage);
-      clearTimeout(timer);
-      resolve(result);
-    };
+function mountSidebar(panelUrl, width = SIDEBAR_WIDTH.DEFAULT) {
+  const staleHost = sidebarHost();
+  if (staleHost) destroySidebar(staleHost);
 
-    const host = document.createElement('div');
-    host.id = SIDEBAR_HOST_ID;
-    // The host itself carries no layout: it is a fixed, full-height strip on the
-    // right. Overlay rather than reflow — pushing the page (margin/transform)
-    // breaks fixed and absolutely positioned layouts on a huge number of sites.
-    host.style.cssText = [
-      'position:fixed', 'top:0', 'right:0', 'height:100vh',
-      `width:${width}px`, 'z-index:2147483647',
-      'border:0', 'margin:0', 'padding:0',
-      'color-scheme:normal',
-    ].join(';');
+  const host = document.createElement('div');
+  host.id = SIDEBAR_HOST_ID;
+  host.setAttribute('aria-label', 'Hermes Browser sidebar');
+  host.setAttribute('aria-hidden', 'true');
+  host.style.setProperty('width', `${clampSidebarWidth(width)}px`, 'important');
 
-    const shadow = host.attachShadow({ mode: 'open' });
-    shadow.innerHTML = `
-      <style>
-        :host { all: initial; }
-        .wrap { position:relative; width:100%; height:100%;
-                box-shadow:-2px 0 12px rgba(0,0,0,.18); background:#000; display:flex; }
-        .grip { position:absolute; left:0; top:0; width:8px; height:100%;
-                cursor:ew-resize; z-index:2; background:transparent; }
-        .grip:hover { background:rgba(127,127,127,.35); }
-        .close { position:absolute; top:6px; left:12px; z-index:3;
-                 width:22px; height:22px; line-height:20px; text-align:center;
-                 border-radius:6px; border:1px solid rgba(127,127,127,.4);
-                 background:rgba(20,20,20,.75); color:#eee; cursor:pointer;
-                 font:13px/20px -apple-system,system-ui,sans-serif; padding:0; }
-        .close:hover { background:rgba(60,60,60,.95); }
-        iframe { flex:1; width:100%; height:100%; border:0; display:block; }
-      </style>
-      <div class="wrap">
-        <div class="grip" part="grip"></div>
-        <button class="close" title="Close Hermes" aria-label="Close Hermes">&times;</button>
-        <iframe title="Hermes Browser" allow="clipboard-write; microphone"></iframe>
-      </div>
-    `;
-
-    const iframe = shadow.querySelector('iframe');
-    const grip = shadow.querySelector('.grip');
-    const closeButton = shadow.querySelector('.close');
-
-    const onPanelMessage = (event) => {
-      // Verify by source, not origin: a blocked/sandboxed frame can report a
-      // null origin, and the extension origin differs per install on Safari.
-      if (event.source !== iframe.contentWindow) return;
-      const type = event.data?.type;
-      if (type === SIDEBAR_MESSAGES.READY) finish({ ok: true, mounted: true });
-      if (type === SIDEBAR_MESSAGES.CLOSE) {
-        unmountSidebar();
-        reportSidebarClosed();
+  const shadow = host.attachShadow({ mode: 'open' });
+  shadow.innerHTML = `
+    <style>
+      :host {
+        all: initial !important;
+        position: fixed !important;
+        inset: 0 0 0 auto !important;
+        height: 100vh !important;
+        max-width: 100vw !important;
+        z-index: 2147483647 !important;
+        border: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        color-scheme: normal !important;
+        transform: translate3d(100%, 0, 0) !important;
+        transition: transform ${SIDEBAR_ANIMATION_MS}ms cubic-bezier(.16, 1, .3, 1) !important;
+        will-change: transform !important;
+        pointer-events: none !important;
       }
-    };
-    window.addEventListener('message', onPanelMessage);
+      :host(.${SIDEBAR_OPEN_CLASS}) {
+        transform: translate3d(0, 0, 0) !important;
+        pointer-events: auto !important;
+      }
+      .wrap { position:relative; width:100%; height:100%;
+              box-shadow:-2px 0 12px rgba(0,0,0,.18); background:#000; display:flex; }
+      .grip { position:absolute; left:0; top:0; width:8px; height:100%;
+              cursor:ew-resize; z-index:2; background:transparent; }
+      .grip:hover { background:rgba(127,127,127,.35); }
+      .close { position:absolute; top:6px; left:12px; z-index:3;
+               width:22px; height:22px; line-height:20px; text-align:center;
+               border-radius:6px; border:1px solid rgba(127,127,127,.4);
+               background:rgba(20,20,20,.75); color:#eee; cursor:pointer;
+               font:13px/20px -apple-system,system-ui,sans-serif; padding:0; }
+      .close:hover { background:rgba(60,60,60,.95); }
+      iframe { flex:1; width:100%; height:100%; border:0; display:block; }
+    </style>
+    <div class="wrap">
+      <div class="grip" part="grip"></div>
+      <button class="close" title="Close Hermes" aria-label="Close Hermes">&times;</button>
+      <iframe title="Hermes Browser" allow="clipboard-write; microphone"></iframe>
+    </div>
+  `;
 
-    // Closing is a deliberate act: tell the background, or it would restore the
-    // sidebar on the next navigation.
-    closeButton.addEventListener('click', () => {
-      unmountSidebar();
+  const iframe = shadow.querySelector('iframe');
+  const grip = shadow.querySelector('.grip');
+  const closeButton = shadow.querySelector('.close');
+  let panelReady = false;
+
+  const onPanelMessage = (event) => {
+    const type = event.data?.type;
+    if (type === SIDEBAR_MESSAGES.READY) {
+      // READY only changes diagnostics. Accept it across Safari's isolated
+      // WindowProxy wrappers; it cannot invoke a privileged operation.
+      panelReady = true;
+    }
+    if (type === SIDEBAR_MESSAGES.CLOSE && event.source === iframe.contentWindow) {
+      setSidebarOpen(host, false);
       reportSidebarClosed();
-    });
+    }
+  };
+  window.addEventListener('message', onPanelMessage);
 
-    // Drag-to-resize. Pointer capture keeps events coming while the cursor is
-    // over the iframe, which would otherwise swallow them.
-    grip.addEventListener('pointerdown', (event) => {
-      event.preventDefault();
-      grip.setPointerCapture(event.pointerId);
-      const startX = event.clientX;
-      const startWidth = host.getBoundingClientRect().width;
-      iframe.style.pointerEvents = 'none';
+  // Keep the panel mounted off-canvas so reopening is instant and retains the
+  // current conversation, just like direct-DOM Safari sidebars.
+  closeButton.addEventListener('click', () => {
+    setSidebarOpen(host, false);
+    reportSidebarClosed();
+  });
 
-      const onMove = (moveEvent) => {
-        const next = clampSidebarWidth(startWidth + (startX - moveEvent.clientX));
-        host.style.width = `${next}px`;
-      };
-      const onUp = () => {
-        grip.removeEventListener('pointermove', onMove);
-        grip.removeEventListener('pointerup', onUp);
-        iframe.style.pointerEvents = '';
-        persistSidebarWidth(host.getBoundingClientRect().width);
-      };
-      grip.addEventListener('pointermove', onMove);
-      grip.addEventListener('pointerup', onUp);
-    });
+  // Drag-to-resize. Pointer capture keeps events coming while the cursor is
+  // over the iframe, which would otherwise swallow them.
+  grip.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    grip.setPointerCapture(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = host.getBoundingClientRect().width;
+    iframe.style.pointerEvents = 'none';
 
-    iframe.addEventListener('error', (event) => {
-      console.warn('[Hermes Browser] sidebar iframe failed to load', panelUrl, event);
-    });
+    const onMove = (moveEvent) => {
+      const next = clampSidebarWidth(startWidth + (startX - moveEvent.clientX));
+      host.style.setProperty('width', `${next}px`, 'important');
+    };
+    const onEnd = () => {
+      grip.removeEventListener('pointermove', onMove);
+      grip.removeEventListener('pointerup', onEnd);
+      grip.removeEventListener('pointercancel', onEnd);
+      iframe.style.pointerEvents = '';
+      persistSidebarWidth(host.getBoundingClientRect().width);
+    };
+    grip.addEventListener('pointermove', onMove);
+    grip.addEventListener('pointerup', onEnd);
+    grip.addEventListener('pointercancel', onEnd);
+  });
 
-    const timer = setTimeout(() => {
-      // No handshake. Either the page's CSP refused the frame, or the extension
-      // page refused to be framed by a web page.
+  iframe.addEventListener('error', (event) => {
+    console.warn('[Hermes Browser] sidebar iframe failed to load', panelUrl, event);
+  });
+
+  const readyTimer = setTimeout(() => {
+    if (!panelReady) {
       console.warn(
-        '[Hermes Browser] sidebar did not confirm within %dms — falling back to a window.\n'
-        + 'panel url: %s\n'
-        + 'iframe still in DOM: %s\n'
-        + 'Look above for a CSP / "Refused to display" / "frame-ancestors" error.',
+        '[Hermes Browser] sidebar READY was not observed within %dms; keeping the mounted sidebar open.\n'
+        + 'panel url: %s',
         SIDEBAR_READY_TIMEOUT_MS,
         panelUrl,
-        Boolean(sidebarHost()),
       );
-      unmountSidebar();
-      finish({ ok: false, blocked: true });
-    }, SIDEBAR_READY_TIMEOUT_MS);
+    }
+  }, SIDEBAR_READY_TIMEOUT_MS);
 
-    // documentElement, not body: body can be missing or replaced by the page.
-    (document.documentElement || document.body).appendChild(host);
-    console.info('[Hermes Browser] mounting sidebar iframe:', panelUrl);
-    iframe.src = panelUrl;
-  });
+  host.__hermesSidebarCleanup = () => {
+    clearTimeout(readyTimer);
+    window.removeEventListener('message', onPanelMessage);
+  };
+
+  // documentElement, not body: body can be missing or replaced by the page.
+  (document.documentElement || document.body).appendChild(host);
+  iframe.src = panelUrl;
+  console.info('[Hermes Browser] mounted persistent sidebar:', panelUrl);
+
+  // Paint the off-canvas state before moving it to zero, producing the same
+  // smooth entry used by direct-DOM sidebars.
+  const reveal = () => {
+    if (host.isConnected) setSidebarOpen(host, true);
+  };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => requestAnimationFrame(reveal));
+  } else {
+    setTimeout(reveal, 0);
+  }
+
+  // Width is presentation-only. Read it after mounting so Safari never holds
+  // the toolbar response channel open while storage wakes up.
+  storedSidebarWidth().then((storedWidth) => {
+    if (host.isConnected) host.style.setProperty('width', `${storedWidth}px`, 'important');
+  }).catch(() => {});
+
+  return { ok: true, mounted: true };
 }
 
 /** Tell the background the sidebar is gone, so it stops restoring it on navigation. */
@@ -663,20 +706,30 @@ function reportSidebarClosed() {
   }
 }
 
-async function toggleSidebar(panelUrl) {
-  if (unmountSidebar()) {
+function toggleSidebar(panelUrl) {
+  const host = sidebarHost();
+  if (host && sidebarIsOpen(host)) {
+    setSidebarOpen(host, false);
     reportSidebarClosed();
     return { ok: true, mounted: false };
   }
+  if (host) {
+    setSidebarOpen(host, true);
+    return { ok: true, mounted: true };
+  }
   if (!panelUrl) return { ok: false, error: 'missing panel url' };
-  return mountSidebar(panelUrl, await storedSidebarWidth());
+  return mountSidebar(panelUrl);
 }
 
 /** Mount if absent; a no-op if already there. Used to restore after a navigation. */
-async function ensureSidebar(panelUrl) {
-  if (sidebarHost()) return { ok: true, mounted: true };
+function ensureSidebar(panelUrl) {
+  const host = sidebarHost();
+  if (host) {
+    setSidebarOpen(host, true);
+    return { ok: true, mounted: true };
+  }
   if (!panelUrl) return { ok: false, error: 'missing panel url' };
-  return mountSidebar(panelUrl, await storedSidebarWidth());
+  return mountSidebar(panelUrl);
 }
 
 const messageListener = (message, _sender, sendResponse) => {
@@ -689,10 +742,12 @@ const messageListener = (message, _sender, sendResponse) => {
   }
   if (message?.type === SIDEBAR_MESSAGES.TOGGLE || message?.type === SIDEBAR_MESSAGES.ENSURE) {
     const run = message.type === SIDEBAR_MESSAGES.ENSURE ? ensureSidebar : toggleSidebar;
-    run(message.url)
-      .then(sendResponse)
-      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
-    return true;
+    try {
+      sendResponse(run(message.url));
+    } catch (error) {
+      sendResponse({ ok: false, error: error?.message || String(error) });
+    }
+    return false;
   }
   if (message?.type === 'HERMES_GET_PAGE_CONTEXT') {
     try {

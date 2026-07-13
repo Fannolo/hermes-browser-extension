@@ -31,7 +31,7 @@ Open the panel with the toolbar button or `Alt+H`.
 
 ## What is different on Safari
 
-### There is no sidebar. The panel opens as a detached window.
+### Safari has no native sidebar API, so Hermes mounts one in the page.
 
 Safari implements **neither** sidebar API:
 
@@ -43,13 +43,23 @@ Safari implements **neither** sidebar API:
 (Both report `version_added: false` for Safari in
 [mdn/browser-compat-data](https://github.com/mdn/browser-compat-data).)
 
-So `scripts/build-safari.mjs` strips both, and `background.js` opens the panel as a
-**narrow detached window** (`windows.create({ type: 'popup' })`) — the same path
-Opera and Firefox already use.
+So `scripts/build-safari.mjs` strips both APIs. On normal `http://` and `https://`
+pages, the toolbar action asks the manifest content script to create a fixed
+Shadow DOM host at the right edge. That host slides on-screen by toggling an open
+class and keeps the Hermes extension document mounted off-canvas when closed, so
+the current conversation survives close/reopen cycles.
 
-This is deliberately *not* an action popover. A popover closes the moment you click
-the page, which would break the element picker and any read-the-page-while-chatting
-flow. A detached window stays open while you interact with the page.
+The sidebar overlays the page; it does not resize or rewrite the site's layout.
+Safari start pages, PDFs, browser-internal pages, and tabs without the manifest
+content script still fall back to a **narrow detached window**
+(`windows.create({ type: 'popup' })`). This is deliberately not an action popover:
+a popover closes the moment you click the page, which would break the element
+picker and read-the-page-while-chatting flows.
+
+After installing a rebuilt extension, reload any web page that was already open
+before testing the toolbar button. Safari does not replace a manifest content
+script inside an existing document, and Hermes deliberately avoids dynamic
+injection because Safari can reload the target page while performing it.
 
 ### Voice dictation
 

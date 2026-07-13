@@ -1,17 +1,15 @@
 /**
  * Injected-sidebar handshake.
  *
- * When sidepanel.html is mounted in-page as a sidebar (see content.js), the
- * content script needs proof that the frame really loaded. It cannot use the
- * iframe's `load` event: a page whose CSP `frame-src` blocks us still fires
- * `load` for about:blank, so `load` cannot tell "blocked" from "mounted".
+ * When sidepanel.html is mounted in-page as a sidebar (see content.js), this
+ * tells the content script that the extension document started. READY is a
+ * diagnostic signal only; Safari may wrap WindowProxy objects differently
+ * across isolated worlds, so missing it never removes a visible sidebar.
  *
  * This ships as its own file, loaded *before* sidepanel.js, on purpose. The
  * handshake means "the frame loaded and our code is running" — which is already
  * true here. Sending it from inside sidepanel.js would couple it to that
- * module's entire import graph and init path, so any error during startup would
- * suppress the ping, time out the mount, and silently demote the user to the
- * detached window. Nothing here can throw.
+ * module's entire import graph and init path. Nothing here can throw.
  *
  * Harmless outside the sidebar: in a tab, popup, or detached window there is no
  * parent frame, so this is a no-op.
@@ -22,7 +20,7 @@
     try {
       globalThis.parent.postMessage({ type: 'HERMES_SIDEBAR_READY' }, '*');
     } catch {
-      /* cross-origin parent: the mount will time out and fall back to a window */
+      /* cross-origin parent: content.js will keep the mounted host open */
     }
   };
   ping();

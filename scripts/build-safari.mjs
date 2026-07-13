@@ -10,11 +10,10 @@
  * (Confirmed against mdn/browser-compat-data: both report version_added: false
  * for Safari.)
  *
- * So the Safari build strips both, and the panel opens as a detached narrow
- * window via windows.create({ type: 'popup' }) — the same path Opera/Firefox
- * already use in background.js. A detached window is used rather than an action
- * popover on purpose: a popover closes as soon as the user clicks the page,
- * which would break the element-picker and any read-the-page-while-chatting flow.
+ * The Safari build strips both. On normal web pages the action opens a persistent
+ * in-page Shadow DOM host; restricted pages fall back to a detached narrow
+ * window via windows.create({ type: 'popup' }). A popover is deliberately not
+ * used because it closes as soon as the user clicks the page.
  *
  * The resulting dist/safari/ is fed to `xcrun safari-web-extension-converter`
  * to produce the Xcode app wrapper. See SAFARI.md.

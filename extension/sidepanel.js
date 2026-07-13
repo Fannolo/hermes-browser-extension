@@ -81,6 +81,7 @@ import {
 import { extractYouTubeVideoId } from './lib/transcript.mjs';
 import { isSafari } from './lib/browser-runtime.mjs';
 import { normalizeSidebarPresentation } from './lib/injected-sidebar.mjs';
+import { isEmbeddedSafariPanel, sendTabMessage } from './lib/tab-messaging.mjs';
 import { buildDashboardWsUrl, createGatewayClient, WS_EVENTS, WS_METHODS } from './lib/gateway-ws.mjs';
 import {
   dashboardTrustPrompt,
@@ -5027,15 +5028,21 @@ async function tabsForCurrentScope() {
  */
 async function ensureContentScript(tabId) {
   try {
-    const pong = await chrome.tabs.sendMessage(tabId, { type: 'HERMES_PING' });
-    if (pong?.ok) return;
+    const pong = await sendTabMessage(tabId, { type: 'HERMES_PING' });
+    if (pong?.ok) return true;
   } catch {
     // No listener — the content script really is absent. Fall through and inject.
   }
+  // The embedded Safari panel can reach a live content script only through the
+  // background relay. If that also fails, dynamic injection is unsafe: WebKit
+  // reloads the host tab and destroys the sidebar.
+  if (isEmbeddedSafariPanel()) return false;
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    return true;
   } catch (_error) {
     // Static content scripts or restricted pages may make this unnecessary/impossible.
+    return false;
   }
 }
 
@@ -5144,6 +5151,16 @@ function collectPageContextFallback(options = {}) {
 }
 
 async function getPageContextViaScripting(tabId, options, originalError) {
+  if (isEmbeddedSafariPanel()) {
+    return {
+      ok: false,
+      error: originalError?.message || String(originalError || 'Page content script unavailable'),
+      reason: 'Safari blocked same-tab content messaging; dynamic injection was skipped to keep the page open.',
+      text: '',
+      selectedText: '',
+      meta: {},
+    };
+  }
   try {
     const [injected] = await chrome.scripting.executeScript({
       target: { tabId },
@@ -5190,7 +5207,7 @@ async function getPageContext(tab) {
   const options = { depth: settings.contextDepth };
   try {
     await ensureContentScript(tab.id);
-    const response = await chrome.tabs.sendMessage(tab.id, { type: 'HERMES_GET_PAGE_CONTEXT', options });
+    const response = await sendTabMessage(tab.id, { type: 'HERMES_GET_PAGE_CONTEXT', options });
     // A response that claims ok but carries no actual page text is the signature
     // of a stale/orphaned content script that returned a bare ack. Run the
     // scripting fallback so the user still gets real page text instead of 0.
@@ -5354,12 +5371,12 @@ async function startElementPick() {
   try {
     await ensureContentScript(tab.id);
     if (elementPickActiveForTab(tab)) {
-      await chrome.tabs.sendMessage(tab.id, { type: ELEMENT_PICK_MESSAGES.CANCEL });
+      await sendTabMessage(tab.id, { type: ELEMENT_PICK_MESSAGES.CANCEL });
       await clearElementPickState({ tabId: tab.id });
       setStatus('ok', 'Element pick cancelled', '');
       return;
     }
-    const response = await chrome.tabs.sendMessage(tab.id, { type: ELEMENT_PICK_MESSAGES.START });
+    const response = await sendTabMessage(tab.id, { type: ELEMENT_PICK_MESSAGES.START });
     if (response?.ok === false) throw new Error(response.error || 'Could not start element picker');
     await persistElementPickState({ tabId: tab.id, url: tab.url });
     setStatus('ok', 'Pick an element', 'Click any element on the page. Press Esc to cancel.');
@@ -7260,4 +7277,3 @@ renderVersionInfo();
 renderContextScopeControls();
 updateVoiceButtonState();
 renderEmptyState();
-

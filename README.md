@@ -9,7 +9,7 @@ Browser-native side panel for [Hermes Agent](https://hermes-agent.nousresearch.c
 </p>
 
 <p align="center">
-  <strong>Public alpha v0.1.10 · Load unpacked · Local / Hermes Cloud / Remote · Full Hermes runtime tools</strong><br />
+  <strong>Public alpha v0.1.11 · Load unpacked · Local / Hermes Cloud / Remote · Full Hermes runtime tools</strong><br />
   Not on the Chrome Web Store yet.
 </p>
 
@@ -37,7 +37,7 @@ This repo is specifically for the **Hermes Browser Extension**: the Chrome/Edge/
 - Auto-syncs connected Hermes providers/models, profiles, skills, sessions, and capabilities.
 - Keeps runtime plugins available in the same Hermes session. For example, a connected social or messaging plugin can add account, post, and trend context while the extension supplies browser-page context.
 - Shows a Hermes compatibility panel so older gateways degrade into explicit fallback/manual modes instead of broken route errors.
-- Adds **Copy Diagnostics** for v0.1.10 support reports: browser family, version/build, extension origin, gateway origin, capability flags, context mode, selected model/provider, and last visible error with tokens/page content stripped.
+- Adds **Copy Diagnostics** for v0.1.11 support reports: browser family, version/build, extension origin, gateway origin, capability flags, context mode, selected model/provider, and last visible error with tokens/page content stripped.
 - Adds an optional **Hermes Browser Companion Plugin** that passively caches sanitized Browser Context Protocol metadata for Hermes tools/hooks without browser control, network calls, or API-server routes.
 - Adds `/meta` / `/metadata` / `/head` for truthful captured-page metadata analysis: it reports only what the Browser context actually contains and explicitly calls out metadata classes that were not captured.
 - Adds session controls for Browser work: create/switch sessions, copy session IDs, rename sessions, smart first-message titles, and compact on-brand session actions.
@@ -66,13 +66,13 @@ This repo is specifically for the **Hermes Browser Extension**: the Chrome/Edge/
 - Node.js 20+.
 - Chrome, Edge, Brave, Comet, or another Chromium browser with Side Panel API support (Chrome 114+ baseline).
 
-## v0.1.10 compatibility matrix
+## v0.1.11 compatibility matrix
 
-| Surface | Supported in v0.1.10 | Fallback / note |
+| Surface | Supported in v0.1.11 | Fallback / note |
 | --- | --- | --- |
 | Chrome / Edge / Chromium 114+ side panel | Yes | Primary public support target. |
 | Brave / Comet / Chromium forks | Best-effort | Must expose the Chromium Side Panel API and extension clipboard permissions for Copy Diagnostics. |
-| Safari 16.4+ (macOS) | Yes, via app wrapper | `npm run build:safari` + `./scripts/make-safari-app.sh`. Safari has no sidebar API (neither `chrome.sidePanel` nor `sidebar_action`), so the panel opens as a detached window. Requires Xcode to build. See [SAFARI.md](SAFARI.md). |
+| Safari 16.4+ (macOS) | Yes, via app wrapper | `npm run build:safari` + `./scripts/make-safari-app.sh`. Normal web pages use a persistent in-page Shadow DOM sidebar; restricted pages fall back to a detached window. Requires Xcode to build. See [SAFARI.md](SAFARI.md). |
 | Firefox | Preview only | Diagnostics now report browser family, but cross-browser support is not shipped yet. |
 | Local Hermes API server | Yes | Default path: `http://127.0.0.1:8642`. |
 | Hermes Cloud | Yes, Trusted Dashboard Attach | Requires an active signed-in HTTPS Hermes Cloud agent tab. Uses a single-use WebSocket ticket and enforces Chat-only context. This is not a general cookie import or background account-discovery flow. |
@@ -191,7 +191,7 @@ With a key present, Remote means **Remote API server** and does not force HTTPS.
 
 ### Hermes Cloud
 
-Hermes Cloud uses **Trusted Dashboard Attach** in v0.1.10:
+Hermes Cloud uses **Trusted Dashboard Attach** in v0.1.11:
 
 1. Open your Hermes Cloud agent in a normal browser tab and sign in.
 2. Keep that fully loaded HTTPS agent tab active.
@@ -257,14 +257,14 @@ Make sure you loaded `dist/`, not the repo root. The selected folder must contai
 
 ### Chrome still shows an older version after updating
 
-The browser is still using an old unpacked folder or an unpacked extension card that was not reloaded. For v0.1.10, the source manifest, built `dist/` manifest, and release archive should all contain `manifest.json` version `0.1.10`.
+The browser is still using an old unpacked folder or an unpacked extension card that was not reloaded. For v0.1.11, the source manifest, built `dist/` manifest, and release archive should all contain `manifest.json` version `0.1.11`.
 
 Fix:
 
-1. Extract/download the v0.1.10 release or run `npm run build` locally.
+1. Extract/download the v0.1.11 build or run `npm run build` locally.
 2. Open `chrome://extensions` or `edge://extensions`.
 3. On the Hermes Browser Extension card, click **Reload**.
-4. If it still shows an older version, click **Remove**, then **Load unpacked** again and select the fresh v0.1.10 `dist/` folder.
+4. If it still shows an older version, click **Remove**, then **Load unpacked** again and select the fresh v0.1.11 `dist/` folder.
 5. Click **service worker** / **Inspect views** only for debugging; it is not the version source.
 
 ### Filing a support issue
@@ -287,7 +287,7 @@ If `/v1/models` fails, check `API_SERVER_KEY`, the extension's stored API key/br
 
 ### The side panel shows a runtime warning but still says connected
 
-v0.1.10 separates gateway reachability from upstream Hermes runtime/tool failures. If `/health` works but Hermes raises a runtime traceback, the Browser stays connected and shows the warning instead of turning the whole connection red.
+v0.1.11 separates gateway reachability from upstream Hermes runtime/tool failures. If `/health` works but Hermes raises a runtime traceback, the Browser stays connected and shows the warning instead of turning the whole connection red.
 
 For tracebacks like `int() argument must be a string, a bytes-like object or a real number, not 'NoneType'`, check the Hermes Agent logs on the machine running the gateway. If the traceback mentions `computer_use` or `cua-driver`, run:
 
