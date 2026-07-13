@@ -45,9 +45,18 @@ Safari implements **neither** sidebar API:
 
 So `scripts/build-safari.mjs` strips both APIs. On normal `http://` and `https://`
 pages, the toolbar action asks the manifest content script to create a fixed
-Shadow DOM host at the right edge. That host slides on-screen by toggling an open
-class and keeps the Hermes extension document mounted off-canvas when closed, so
-the current conversation survives close/reopen cycles.
+Shadow DOM host at the right edge. The Safari build bundles the Hermes markup,
+styles, page collector, and panel code into that content script, so the complete
+interface renders directly inside the ShadowRoot instead of loading
+`sidepanel.html` in an iframe. The host slides on-screen by toggling an open class
+and stays mounted off-canvas when closed, so the current conversation survives
+close/reopen cycles.
+
+Hermes still needs extension-only tab access and cross-origin gateway transport.
+The direct panel calls a small allowlisted background API for those operations;
+HTTP/SSE streams and dashboard WebSockets are relayed over extension ports. This
+keeps the page-facing panel lifecycle independent from an embedded extension
+document without granting arbitrary browser or network operations to the page.
 
 The sidebar overlays the page; it does not resize or rewrite the site's layout.
 Safari start pages, PDFs, browser-internal pages, and tabs without the manifest

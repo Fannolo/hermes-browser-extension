@@ -1,10 +1,10 @@
 /**
  * Injected-sidebar handshake.
  *
- * When sidepanel.html is mounted in-page as a sidebar (see content.js), this
- * tells the content script that the extension document started. READY is a
- * diagnostic signal only; Safari may wrap WindowProxy objects differently
- * across isolated worlds, so missing it never removes a visible sidebar.
+ * When an unbundled development copy mounts sidepanel.html in a fallback frame
+ * (see content.js), this tells the content script that the extension document
+ * started. Production Safari builds render the panel directly in the ShadowRoot.
+ * READY remains diagnostic only; missing it never removes a visible sidebar.
  *
  * This ships as its own file, loaded *before* sidepanel.js, on purpose. The
  * handshake means "the frame loaded and our code is running" — which is already

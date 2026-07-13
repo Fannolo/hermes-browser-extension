@@ -21,11 +21,14 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { build } from 'esbuild';
 
 const root = process.cwd();
 const src = path.join(root, 'extension');
 const dest = path.join(root, 'dist', 'safari');
 const buildInfoFileName = 'build-info.json';
+const safariContentEntryFileName = 'safari-content-entry.js';
+const safariContentBundleFileName = 'safari-content.bundle.js';
 
 function copyDir(from, to) {
   fs.mkdirSync(to, { recursive: true });
@@ -67,6 +70,24 @@ function buildInfo() {
 
 const sourceManifest = JSON.parse(fs.readFileSync(path.join(src, 'manifest.json'), 'utf8'));
 
+const contentScriptEntries = sourceManifest.content_scripts || [];
+if (
+  contentScriptEntries.length !== 1
+  || contentScriptEntries[0]?.js?.length !== 1
+  || contentScriptEntries[0].js[0] !== 'content.js'
+) {
+  throw new Error(
+    'Safari bundling expects one manifest content script named content.js; '
+    + 'import any additional Safari content modules from safari-content-entry.js.',
+  );
+}
+
+// Safari's manifest content-script declaration has no module `type`. Apple
+// documents module support for background workers, but injected scripts remain
+// an ordered list of classic .js files. Emit one self-contained IIFE so neither
+// static imports nor a dynamic-import chunk cross that boundary at runtime.
+contentScriptEntries[0].js = [safariContentBundleFileName];
+
 // --- Strip keys Safari does not implement -----------------------------------
 // Safari logs a console warning and, for some keys, refuses to load the
 // extension outright when it encounters unknown manifest keys/permissions.
@@ -101,10 +122,51 @@ sourceManifest.browser_specific_settings = {
   },
 };
 
+// The direct Shadow DOM panel resolves its fonts and images through
+// runtime.getURL(). Those page-visible requests must be web-accessible, while
+// sidepanel.html itself no longer needs to be exposed as an iframe document.
+const directPanelSources = [
+  fs.readFileSync(path.join(src, 'sidepanel.html'), 'utf8'),
+  fs.readFileSync(path.join(src, 'sidepanel.css'), 'utf8'),
+];
+const directPanelAssets = Array.from(new Set(
+  directPanelSources.flatMap((source) => source.match(/assets\/[a-zA-Z0-9_./-]+/g) || []),
+)).sort();
+for (const resource of directPanelAssets) {
+  if (!fs.existsSync(path.join(src, resource))) {
+    throw new Error(`Direct panel asset does not exist: ${resource}`);
+  }
+}
+sourceManifest.web_accessible_resources = [{
+  resources: directPanelAssets,
+  matches: ['http://*/*', 'https://*/*'],
+}];
+
 const infoJson = `${JSON.stringify(buildInfo(), null, 2)}\n`;
 
 fs.rmSync(dest, { recursive: true, force: true });
 copyDir(src, dest);
+
+await build({
+  entryPoints: [path.join(src, safariContentEntryFileName)],
+  outfile: path.join(dest, safariContentBundleFileName),
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: ['safari16.4'],
+  charset: 'ascii',
+  legalComments: 'none',
+  sourcemap: false,
+  splitting: false,
+  loader: {
+    '.css': 'text',
+    '.html': 'text',
+  },
+});
+
+// The source entry contains ESM syntax by design; only its generated classic
+// bundle belongs in the Safari extension payload.
+fs.rmSync(path.join(dest, safariContentEntryFileName), { force: true });
 
 fs.writeFileSync(path.join(dest, 'manifest.json'), `${JSON.stringify(sourceManifest, null, 2)}\n`);
 fs.writeFileSync(path.join(dest, buildInfoFileName), infoJson);
@@ -113,6 +175,7 @@ console.log(`Built Safari extension: ${dest}`);
 console.log('Safari manifest: stripped side_panel, sidebar_action, sidePanel permission,');
 console.log('                 minimum_chrome_version, _execute_sidebar_action command');
 console.log('                 added browser_specific_settings.safari.strict_min_version');
+console.log(`Bundled direct Shadow DOM panel: ${safariContentBundleFileName}`);
 console.log(`Stamped build metadata: ${buildInfoFileName}`);
 console.log('');
 console.log('Next: xcrun safari-web-extension-converter dist/safari --macos-only --project-location build/safari');

@@ -24,6 +24,12 @@ import {
   canRelayTabMessage,
   TAB_MESSAGE_RELAY,
 } from './lib/tab-messaging.mjs';
+import {
+  CONTENT_PANEL_API_MESSAGE,
+  createContentPanelApiHandler,
+} from './lib/content-panel-api.mjs';
+import { installContentPanelEventBroker } from './lib/content-panel-runtime.mjs';
+import { installContentPanelTransport } from './lib/content-panel-transport.mjs';
 
 // The content script acknowledges mounts synchronously. Keep a defensive upper
 // bound for missing/stale content scripts so toolbar clicks never hang forever.
@@ -284,8 +290,8 @@ async function openHermesPanel(tab) {
   });
 
   // Safari has no sidebar API at all, so prefer the in-page injected sidebar and
-  // fall back to the detached window when it cannot mount (non-web page, or the
-  // page's CSP refuses our iframe).
+  // fall back to the detached window when it cannot mount (for example, a
+  // restricted/non-web page with no manifest content script).
   if (detectBrowserId() === BROWSER_IDS.SAFARI && await injectedSidebarPreferred()) {
     if (await tryInjectedSidebar(tab, panelPath)) return;
   }
@@ -441,6 +447,13 @@ async function getYoutubeTranscript({ videoId, tabId, provider = 'default' } = {
   return { ok: false, videoId: cleanVideoId, reason: failures.map((item) => `${item.source}:${item.reason}`).join('; ') || 'transcript_unavailable' };
 }
 
+const handleContentPanelApi = createContentPanelApiHandler({
+  chromeApi: chrome,
+  transcriptResolver: getYoutubeTranscript,
+});
+const contentPanelEvents = installContentPanelEventBroker({ chromeApi: chrome });
+installContentPanelTransport({ chromeApi: chrome });
+
 chrome.runtime.onInstalled.addListener(configureSidePanel);
 chrome.runtime.onStartup.addListener(configureSidePanel);
 chrome.action.onClicked.addListener(openHermesPanel);
@@ -466,4 +479,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     .then(sendResponse)
     .catch((error) => sendResponse({ ok: false, reason: error?.message || String(error) }));
   return true;
+});
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === CONTENT_PANEL_API_MESSAGE) {
+    handleContentPanelApi(message, sender).then(sendResponse);
+    return true;
+  }
+  contentPanelEvents.echoRuntimeMessage(message, sender);
+  return false;
 });

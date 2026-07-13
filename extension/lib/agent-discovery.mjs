@@ -33,10 +33,14 @@ export function normalizeAgentDiscoveryHost(value = '127.0.0.1') {
   return host;
 }
 
-async function probeGatewayModelName(baseUrl, { apiKey = '', signal } = {}) {
+async function probeGatewayModelName(baseUrl, {
+  apiKey = '',
+  signal,
+  fetchFn = globalThis.fetch?.bind(globalThis),
+} = {}) {
   try {
     const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
-    const response = await fetch(`${baseUrl}/v1/models`, { headers, signal });
+    const response = await fetchFn(`${baseUrl}/v1/models`, { headers, signal });
     if (!response.ok) return '';
     const payload = await response.json().catch(() => ({}));
     const first = Array.isArray(payload?.data) ? payload.data[0] : null;
@@ -46,7 +50,11 @@ async function probeGatewayModelName(baseUrl, { apiKey = '', signal } = {}) {
   }
 }
 
-export async function probeGatewayHealth(baseUrl, { apiKey = '', timeoutMs = PROBE_TIMEOUT_MS } = {}) {
+export async function probeGatewayHealth(baseUrl, {
+  apiKey = '',
+  timeoutMs = PROBE_TIMEOUT_MS,
+  fetchFn = globalThis.fetch?.bind(globalThis),
+} = {}) {
   if (!baseUrl) return { ok: false, error: 'no-url' };
   const normalized = normalizeGatewayUrl(baseUrl);
   const url = `${normalized}/health`;
@@ -56,11 +64,13 @@ export async function probeGatewayHealth(baseUrl, { apiKey = '', timeoutMs = PRO
     // First probe is intentionally unauthenticated. Only send the user's bearer
     // token after the endpoint identifies itself as Hermes. This prevents a typo
     // or non-Hermes service on a trusted host from receiving the token.
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetchFn(url, { signal: controller.signal });
     const body = await response.json().catch(() => ({}));
     const hermes = response.ok && body.platform === 'hermes-agent';
     let model = body.model || '';
-    if (hermes && !model) model = await probeGatewayModelName(normalized, { apiKey, signal: controller.signal });
+    if (hermes && !model) {
+      model = await probeGatewayModelName(normalized, { apiKey, signal: controller.signal, fetchFn });
+    }
     return {
       ok: hermes,
       status: response.status,
@@ -87,6 +97,7 @@ export async function discoverLocalAgents({
   apiKey = '',
   host = '127.0.0.1',
   scheme = 'http',
+  fetchFn = globalThis.fetch?.bind(globalThis),
 } = {}) {
   if (!Array.isArray(ports) || !ports.length) return [];
   const safeHost = normalizeAgentDiscoveryHost(host);
@@ -97,7 +108,7 @@ export async function discoverLocalAgents({
   }));
   const results = await Promise.all(
     candidates.map(async (candidate) => {
-      const probe = await probeGatewayHealth(candidate.url, { apiKey });
+      const probe = await probeGatewayHealth(candidate.url, { apiKey, fetchFn });
       return {
         ...candidate,
         ok: probe.ok,

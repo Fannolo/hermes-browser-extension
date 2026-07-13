@@ -72,7 +72,7 @@ This repo is specifically for the **Hermes Browser Extension**: the Chrome/Edge/
 | --- | --- | --- |
 | Chrome / Edge / Chromium 114+ side panel | Yes | Primary public support target. |
 | Brave / Comet / Chromium forks | Best-effort | Must expose the Chromium Side Panel API and extension clipboard permissions for Copy Diagnostics. |
-| Safari 16.4+ (macOS) | Yes, via app wrapper | `npm run build:safari` + `./scripts/make-safari-app.sh`. Normal web pages use a persistent in-page Shadow DOM sidebar; restricted pages fall back to a detached window. Requires Xcode to build. See [SAFARI.md](SAFARI.md). |
+| Safari 16.4+ (macOS) | Yes, via app wrapper | `npm run build:safari` + `./scripts/make-safari-app.sh`. Normal web pages use a directly rendered, persistent Shadow DOM sidebar; restricted pages fall back to a detached window. Requires Xcode to build. See [SAFARI.md](SAFARI.md). |
 | Firefox | Preview only | Diagnostics now report browser family, but cross-browser support is not shipped yet. |
 | Local Hermes API server | Yes | Default path: `http://127.0.0.1:8642`. |
 | Hermes Cloud | Yes, Trusted Dashboard Attach | Requires an active signed-in HTTPS Hermes Cloud agent tab. Uses a single-use WebSocket ticket and enforces Chat-only context. This is not a general cookie import or background account-discovery flow. |

@@ -58,7 +58,8 @@
   font-display: swap;
 }
 
-:root {
+:root,
+.hermes-panel-root {
   color-scheme: light dark;
   --hermes-blue: #0505e8;
   --hermes-blue-deep: #03038f;
@@ -109,6 +110,7 @@
   --hermes-font-display: "HermesDisplay", "Collapse", Georgia, serif;
   --hermes-text-zoom: 1;
   font-family: var(--hermes-font-ui);
+  container: hermes-panel / inline-size;
 }
 
 html[data-hermes-text-size="large"] { --hermes-text-zoom: 1.08; }
@@ -3285,6 +3287,16 @@ textarea:focus, input:focus, select:focus { border-color: var(--hermes-accent); 
 }
 .theme-check:empty { display: none; }
 @media (max-width: 420px) {
+  .appearance-row { grid-template-columns: 1fr; align-items: stretch; }
+  .segmented-control { display: grid; grid-template-columns: repeat(3, 1fr); }
+  .mode-choice { padding-inline: 5px; }
+}
+
+/* In the injected ShadowRoot, viewport media queries describe the website,
+   not the sidebar. Mirror width-sensitive rules against the panel container. */
+@container hermes-panel (max-width: 420px) {
+  .settings-toggle-grid-three { grid-template-columns: 1fr; }
+  .profile-row { grid-template-columns: 1fr; align-items: stretch; }
   .appearance-row { grid-template-columns: 1fr; align-items: stretch; }
   .segmented-control { display: grid; grid-template-columns: repeat(3, 1fr); }
   .mode-choice { padding-inline: 5px; }

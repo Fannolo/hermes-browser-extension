@@ -24,6 +24,8 @@ const contentSource = readFileSync(new URL('../extension/content.js', import.met
 const backgroundSource = readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8');
 const readySource = readFileSync(new URL('../extension/sidebar-ready.js', import.meta.url), 'utf8');
 const panelHtml = readFileSync(new URL('../extension/sidepanel.html', import.meta.url), 'utf8');
+const panelCss = readFileSync(new URL('../extension/sidepanel.css', import.meta.url), 'utf8');
+const panelSource = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
 
 // --- The duplicated contract ------------------------------------------------
 // content.js is a classic content script and cannot import the module, so it
@@ -97,6 +99,41 @@ test('content.js uses an off-canvas class transition and keeps the host mounted'
   assert.match(contentSource, /cubic-bezier\(\.16, 1, \.3, 1\)/);
   assert.match(contentSource, /classList\.toggle\(SIDEBAR_OPEN_CLASS, open\)/);
   assert.match(contentSource, /current conversation/);
+});
+
+test('the Safari bundle mounts the panel directly in the ShadowRoot', () => {
+  assert.match(contentSource, /DIRECT_PANEL_ASSETS_GLOBAL = '__HERMES_DIRECT_PANEL_ASSETS__'/);
+  const start = contentSource.indexOf('function mountDirectSidebar');
+  const end = contentSource.indexOf('\n}\n\n/**', start) + 3;
+  const body = contentSource.slice(start, end);
+  assert.match(body, /document\.createElement\('div'\)/);
+  assert.match(body, /globalThis\[PANEL_MOUNT_GLOBAL\] =/);
+  assert.match(body, /\.then\(\(\) => assets\.load\(\)\)/);
+  assert.doesNotMatch(body, /createElement\(['"]iframe['"]\)|<iframe|postMessage|SIDEBAR_MESSAGES\.READY/);
+});
+
+test('the direct Hermes panel uses a closed ShadowRoot', () => {
+  const directMount = contentSource.slice(
+    contentSource.indexOf('function mountDirectSidebar'),
+    contentSource.indexOf('function mountSidebar', contentSource.indexOf('function mountDirectSidebar')),
+  );
+  assert.match(directMount, /attachShadow\(\{ mode: 'closed' \}\)/);
+  assert.doesNotMatch(directMount, /attachShadow\(\{ mode: 'open' \}\)/);
+});
+
+test('the existing panel code resolves a scoped document before querying controls', () => {
+  const resolverAt = panelSource.indexOf('const document = resolvePanelDocument(globalThis)');
+  const firstQueryAt = panelSource.indexOf("const $ = (selector) => document.querySelector(selector)");
+  assert.ok(resolverAt > -1, 'sidepanel.js must resolve its DOM boundary');
+  assert.ok(firstQueryAt > resolverAt, 'the boundary must be ready before the first control lookup');
+});
+
+test('panel markup and styles support both extension documents and ShadowRoot documents', () => {
+  assert.match(panelHtml, /<html class="hermes-panel-root"/);
+  assert.match(panelHtml, /<body class="hermes-panel-body"/);
+  assert.match(panelCss, /:root,\s*\.hermes-panel-root\s*\{/);
+  assert.match(contentSource, /replace\(\/\\bhtml\(\?=\\\[\|,\)\/g, '\.hermes-panel-root'\)/);
+  assert.match(contentSource, /replace\(\/\\bbody\(\?=\\s\*\(\?:,\|\\\{\)\)\/g, '\.hermes-panel-body'\)/);
 });
 
 test('sidebar toggle responds synchronously instead of holding Safari message channels open', () => {
@@ -207,11 +244,16 @@ test('the panel pings through the tab-message abstraction before injecting', () 
   const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
   const ensure = panel.slice(panel.indexOf('async function ensureContentScript'));
   const body = ensure.slice(0, ensure.indexOf('\n}\n') + 3);
-  const pingAt = body.indexOf("sendTabMessage(tabId, { type: 'HERMES_PING' })");
+  const pingAt = body.indexOf("sendPanelTabMessage(tabId, { type: 'HERMES_PING' })");
   const injectAt = body.indexOf('executeScript');
   assert.ok(pingAt > -1, 'ensureContentScript must ping the content script first');
   assert.ok(injectAt > -1, 'ensureContentScript must still be able to inject');
   assert.ok(pingAt < injectAt, 'the ping must come before the injection');
+  assert.match(
+    panel,
+    /function sendPanelTabMessage[\s\S]*sendTabMessage\(tabId, payload, \{ chromeApi: chrome \}\)/,
+    'the panel tab-message abstraction must use the resolved Chrome facade',
+  );
 });
 
 test('the content script answers the ping', () => {

@@ -12,9 +12,11 @@
  *     PDFs, and about: pages have no sidebar to inject into;
  *   - a browser can still refuse the extension document on a restricted page.
  *
- * READY is diagnostic only. Safari can wrap WindowProxy objects differently
- * across its page and extension worlds, so a missed handshake must never delete
- * a visible sidebar or trigger a detached window.
+ * The production Safari bundle renders directly in the ShadowRoot. READY is a
+ * diagnostic contract for the unbundled extension-document fallback only.
+ * Safari can wrap WindowProxy objects differently across its page and extension
+ * worlds, so a missed handshake must never delete a visible sidebar or trigger
+ * a detached window.
  *
  * content.js is a classic content script and cannot import this module, so it
  * mirrors these values literally. tests/injected-sidebar.test.mjs asserts the
@@ -26,9 +28,9 @@ export const SIDEBAR_MESSAGES = Object.freeze({
   TOGGLE: 'HERMES_TOGGLE_SIDEBAR',
   /** background -> content script: mount if absent; a no-op if already mounted. */
   ENSURE: 'HERMES_ENSURE_SIDEBAR',
-  /** iframe -> content script (window.postMessage): the panel really loaded. */
+  /** fallback frame -> content script (window.postMessage): the panel loaded. */
   READY: 'HERMES_SIDEBAR_READY',
-  /** iframe -> content script (window.postMessage): user asked to close. */
+  /** fallback frame -> content script (window.postMessage): user asked to close. */
   CLOSE: 'HERMES_SIDEBAR_CLOSE',
   /** content script -> background: the user closed the sidebar from the page. */
   CLOSED: 'HERMES_SIDEBAR_CLOSED',

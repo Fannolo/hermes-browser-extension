@@ -173,9 +173,18 @@ import {
   CONNECTION_STATES,
   createConnectionController,
 } from './lib/connection-controller.mjs';
+import { resolvePanelDocument, resolvePanelRuntime } from './lib/panel-document.mjs';
 
+const document = resolvePanelDocument(globalThis);
+const panelRuntime = resolvePanelRuntime(globalThis);
+const chrome = panelRuntime.chrome || globalThis.chrome;
+const runtimeFetch = panelRuntime.fetch || globalThis.fetch?.bind(globalThis);
 const $ = (selector) => document.querySelector(selector);
-const sidePanelParams = parseSidePanelParams(globalThis.location?.search || '');
+const sidePanelParams = parseSidePanelParams(panelRuntime.locationSearch);
+
+function sendPanelTabMessage(tabId, payload) {
+  return sendTabMessage(tabId, payload, { chromeApi: chrome });
+}
 
 const els = {
   shell: $('.shell'),
@@ -521,7 +530,7 @@ function renderVersionInfo(statusText = '') {
 
 function currentExtensionOrigin() {
   try {
-    const url = globalThis.chrome?.runtime?.getURL?.('') || '';
+    const url = chrome?.runtime?.getURL?.('') || '';
     return url.replace(/\/+$/, '');
   } catch {
     return '';
@@ -749,10 +758,10 @@ function showDiagnosticsFallback(markdown) {
 
 function ensureSidepanelInstanceId() {
   try {
-    let id = globalThis.sessionStorage?.getItem('hermesBrowserInstanceId');
+    let id = panelRuntime.sessionStorage?.getItem('hermesBrowserInstanceId');
     if (!id) {
       id = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      globalThis.sessionStorage?.setItem('hermesBrowserInstanceId', id);
+      panelRuntime.sessionStorage?.setItem('hermesBrowserInstanceId', id);
     }
     return id;
   } catch {
@@ -779,7 +788,7 @@ function conversationScopeForContextScope(scope = contextScope, fallback = previ
 
 function saveConversationScopeForInstance() {
   try {
-    globalThis.sessionStorage?.setItem(conversationScopeSessionKey(), JSON.stringify(previousConversationScope));
+    panelRuntime.sessionStorage?.setItem(conversationScopeSessionKey(), JSON.stringify(previousConversationScope));
   } catch {
     // Per-panel conversation-scope persistence is best-effort only.
   }
@@ -787,7 +796,7 @@ function saveConversationScopeForInstance() {
 
 function loadConversationScopeForInstance() {
   try {
-    const stored = globalThis.sessionStorage?.getItem(conversationScopeSessionKey());
+    const stored = panelRuntime.sessionStorage?.getItem(conversationScopeSessionKey());
     if (stored) return conversationScopeForContextScope(JSON.parse(stored), previousConversationScope);
   } catch {
     // Fall through to current/default conversation scope.
@@ -828,7 +837,7 @@ function syncAttachedPanelContextScope() {
 
 function loadContextScopeForInstance() {
   try {
-    const stored = globalThis.sessionStorage?.getItem(contextScopeSessionKey());
+    const stored = panelRuntime.sessionStorage?.getItem(contextScopeSessionKey());
     if (stored) {
       contextScope = normalizeContextScope(JSON.parse(stored));
       if (isAttachedPanelResidency()) syncAttachedPanelContextScope();
@@ -855,7 +864,7 @@ function loadContextScopeForInstance() {
 
 function saveContextScopeForInstance() {
   try {
-    globalThis.sessionStorage?.setItem(contextScopeSessionKey(), JSON.stringify(contextScope));
+    panelRuntime.sessionStorage?.setItem(contextScopeSessionKey(), JSON.stringify(contextScope));
   } catch {
     // Per-panel scope persistence is best-effort only.
   }
@@ -1343,13 +1352,13 @@ function applyConnectionMode(value) {
 }
 
 async function fetchJsonNoStore(url) {
-  const response = await fetch(`${url}${String(url).includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store' });
+  const response = await runtimeFetch(`${url}${String(url).includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store' });
   if (!response.ok) throw new Error(`Fetch failed (${response.status})`);
   return response.json();
 }
 
 async function loadExtensionBuildInfo() {
-  const runtime = globalThis.chrome?.runtime;
+  const runtime = chrome?.runtime;
   const candidates = ['build-info.json', 'extension/build-info.json'];
   for (const candidate of candidates) {
     try {
@@ -1383,7 +1392,7 @@ async function commitsBehindMainForBuild(currentCommit = '', latestCommit = '') 
   if (!currentSha) return null;
   if (latestSha && currentSha === latestSha) return 0;
   const head = latestSha || 'main';
-  const response = await fetch(`${UPDATE_COMPARE_URL}/${encodeURIComponent(currentSha)}...${encodeURIComponent(head)}?t=${Date.now()}`, { cache: 'no-store' });
+  const response = await runtimeFetch(`${UPDATE_COMPARE_URL}/${encodeURIComponent(currentSha)}...${encodeURIComponent(head)}?t=${Date.now()}`, { cache: 'no-store' });
   if (!response.ok) return null;
   const payload = await response.json().catch(() => ({}));
   return Math.max(0, Number.parseInt(payload.ahead_by, 10) || 0);
@@ -1701,7 +1710,7 @@ function preferredVoiceMimeType() {
 
 function chromeRuntimeErrorMessage() {
   try {
-    return globalThis.chrome?.runtime?.lastError?.message || '';
+    return chrome?.runtime?.lastError?.message || '';
   } catch {
     return '';
   }
@@ -1710,7 +1719,7 @@ function chromeRuntimeErrorMessage() {
 function chromePermissionCall(method, details) {
   return new Promise((resolve, reject) => {
     try {
-      method.call(globalThis.chrome.permissions, details, (value) => {
+      method.call(chrome.permissions, details, (value) => {
         const runtimeError = chromeRuntimeErrorMessage();
         if (runtimeError) reject(new Error(runtimeError));
         else resolve(Boolean(value));
@@ -1725,7 +1734,7 @@ async function ensureExtensionAudioPermission() {
   // See voice-dictation.js: Safari has no `audioCapture` permission and grants
   // the microphone per-origin via getUserMedia() instead.
   if (isSafari()) return true;
-  const permissions = globalThis.chrome?.permissions;
+  const permissions = chrome?.permissions;
   if (!permissions) return true;
   const details = { permissions: ['audioCapture'] };
   try {
@@ -1755,24 +1764,24 @@ async function microphonePermissionState() {
 }
 
 async function openMicrophonePermissionPage() {
-  const url = globalThis.chrome?.runtime?.getURL?.(MICROPHONE_PERMISSION_PAGE) || MICROPHONE_PERMISSION_PAGE;
-  if (globalThis.chrome?.tabs?.create) {
-    await globalThis.chrome.tabs.create({ url, active: true });
+  const url = chrome?.runtime?.getURL?.(MICROPHONE_PERMISSION_PAGE) || MICROPHONE_PERMISSION_PAGE;
+  if (chrome?.tabs?.create) {
+    await chrome.tabs.create({ url, active: true });
     return;
   }
   window.open(url, '_blank', 'noopener,noreferrer');
 }
 
 function microphoneSettingsUrl() {
-  const runtimeId = globalThis.chrome?.runtime?.id || '';
+  const runtimeId = chrome?.runtime?.id || '';
   const site = encodeURIComponent(`chrome-extension://${runtimeId}/`);
   return `chrome://settings/content/siteDetails?site=${site}`;
 }
 
 async function openMicrophoneSettingsPage() {
   const url = microphoneSettingsUrl();
-  if (globalThis.chrome?.tabs?.create) {
-    await globalThis.chrome.tabs.create({ url, active: true });
+  if (chrome?.tabs?.create) {
+    await chrome.tabs.create({ url, active: true });
     return;
   }
   window.open(url, '_blank', 'noopener,noreferrer');
@@ -1780,9 +1789,9 @@ async function openMicrophoneSettingsPage() {
 
 async function openVoiceDictationPage(detail = 'Opening a Hermes Voice Dictation tab. Record there; the transcript will return to this composer automatically.') {
   setStatus('warn', 'Opening voice dictation tab', detail);
-  const url = globalThis.chrome?.runtime?.getURL?.(VOICE_DICTATION_PAGE) || VOICE_DICTATION_PAGE;
-  if (globalThis.chrome?.tabs?.create) {
-    await globalThis.chrome.tabs.create({ url, active: true });
+  const url = chrome?.runtime?.getURL?.(VOICE_DICTATION_PAGE) || VOICE_DICTATION_PAGE;
+  if (chrome?.tabs?.create) {
+    await chrome.tabs.create({ url, active: true });
     return;
   }
   window.open(url, '_blank', 'noopener,noreferrer');
@@ -1804,16 +1813,16 @@ async function consumeVoiceDraft(draft = null) {
   if (!draft?.transcript) return false;
   const age = Math.abs(Date.now() - Number(draft.ts || 0));
   if (!Number.isFinite(age) || age > VOICE_DRAFT_MAX_AGE_MS) {
-    await globalThis.chrome?.storage?.local?.remove?.(VOICE_DRAFT_STORAGE_KEY);
+    await chrome?.storage?.local?.remove?.(VOICE_DRAFT_STORAGE_KEY);
     return false;
   }
   const inserted = insertExternalVoiceTranscript(draft.transcript, draft.source || 'voice dictation tab');
-  if (inserted) await globalThis.chrome?.storage?.local?.remove?.(VOICE_DRAFT_STORAGE_KEY);
+  if (inserted) await chrome?.storage?.local?.remove?.(VOICE_DRAFT_STORAGE_KEY);
   return inserted;
 }
 
 async function consumePendingVoiceDraft() {
-  const storage = globalThis.chrome?.storage?.local;
+  const storage = chrome?.storage?.local;
   if (!storage?.get) return false;
   const stored = await storage.get([VOICE_DRAFT_STORAGE_KEY]);
   return consumeVoiceDraft(stored?.[VOICE_DRAFT_STORAGE_KEY]);
@@ -2186,7 +2195,7 @@ const UPDATE_PACKAGE_URL = 'https://raw.githubusercontent.com/abundantbeing/herm
 const UPDATE_MAIN_COMMIT_URL = 'https://api.github.com/repos/abundantbeing/hermes-browser-extension/commits/main';
 const UPDATE_COMPARE_URL = 'https://api.github.com/repos/abundantbeing/hermes-browser-extension/compare';
 const REPO_URL = 'https://github.com/abundantbeing/hermes-browser-extension';
-const runtimeManifest = globalThis.chrome?.runtime?.getManifest?.() || {};
+const runtimeManifest = chrome?.runtime?.getManifest?.() || {};
 const CURRENT_EXTENSION_VERSION = normalizeExtensionVersion(runtimeManifest, els.versionLabel?.textContent);
 
 const COLOR_MODES = new Set(['light', 'dark', 'system']);
@@ -3349,6 +3358,7 @@ async function loadModels({ quiet = false, payload = null, refresh = false } = {
           }),
           refresh,
           profile: settings.activeProfile,
+          fetchFn: runtimeFetch,
         });
         if (dashboardResult.ok && dashboardResult.models.length) {
           registryModels = normalizeHermesModels(dashboardResult.models, settings.model);
@@ -3411,7 +3421,7 @@ async function loadModels({ quiet = false, payload = null, refresh = false } = {
     if (customSources.length) {
       const externalResult = await discoverModelsFromExternalSources({
         sourceUrls: customSources,
-        fetchFn: globalThis.fetch?.bind(globalThis),
+        fetchFn: runtimeFetch,
         timeoutMs: 5000,
       });
       if (externalResult.models.length) {
@@ -3851,7 +3861,7 @@ async function loadAgents({ quiet = false } = {}) {
   }
   if (els.agentPickerStatus) els.agentPickerStatus.textContent = `Scanning ${scheme}://${host} across ${ports.length} port${ports.length === 1 ? '' : 's'}...`;
   const key = settings.apiKey || '';
-  discoveredAgents = await discoverLocalAgents({ ports, host, scheme, apiKey: key });
+  discoveredAgents = await discoverLocalAgents({ ports, host, scheme, apiKey: key, fetchFn: runtimeFetch });
   const healthy = activeAgents(discoveredAgents);
   renderAgentList(discoveredAgents);
   if (els.agentPickerStatus) {
@@ -5028,7 +5038,7 @@ async function tabsForCurrentScope() {
  */
 async function ensureContentScript(tabId) {
   try {
-    const pong = await sendTabMessage(tabId, { type: 'HERMES_PING' });
+    const pong = await sendPanelTabMessage(tabId, { type: 'HERMES_PING' });
     if (pong?.ok) return true;
   } catch {
     // No listener — the content script really is absent. Fall through and inject.
@@ -5207,7 +5217,7 @@ async function getPageContext(tab) {
   const options = { depth: settings.contextDepth };
   try {
     await ensureContentScript(tab.id);
-    const response = await sendTabMessage(tab.id, { type: 'HERMES_GET_PAGE_CONTEXT', options });
+    const response = await sendPanelTabMessage(tab.id, { type: 'HERMES_GET_PAGE_CONTEXT', options });
     // A response that claims ok but carries no actual page text is the signature
     // of a stale/orphaned content script that returned a bare ack. Run the
     // scripting fallback so the user still gets real page text instead of 0.
@@ -5371,12 +5381,12 @@ async function startElementPick() {
   try {
     await ensureContentScript(tab.id);
     if (elementPickActiveForTab(tab)) {
-      await sendTabMessage(tab.id, { type: ELEMENT_PICK_MESSAGES.CANCEL });
+      await sendPanelTabMessage(tab.id, { type: ELEMENT_PICK_MESSAGES.CANCEL });
       await clearElementPickState({ tabId: tab.id });
       setStatus('ok', 'Element pick cancelled', '');
       return;
     }
-    const response = await sendTabMessage(tab.id, { type: ELEMENT_PICK_MESSAGES.START });
+    const response = await sendPanelTabMessage(tab.id, { type: ELEMENT_PICK_MESSAGES.START });
     if (response?.ok === false) throw new Error(response.error || 'Could not start element picker');
     await persistElementPickState({ tabId: tab.id, url: tab.url });
     setStatus('ok', 'Pick an element', 'Click any element on the page. Press Esc to cancel.');
@@ -5499,7 +5509,7 @@ function authHeaders({ json = false } = {}) {
 async function apiFetch(path, options = {}) {
   const base = normalizeGatewayUrl(settings.gatewayUrl);
   const hasBody = typeof options.body !== 'undefined';
-  return fetch(`${base}${path}`, {
+  return runtimeFetch(`${base}${path}`, {
     ...options,
     headers: {
       ...authHeaders({ json: hasBody }),
@@ -5917,7 +5927,7 @@ async function ensureRemoteWsClient() {
     `[Hermes] remote: ticket ok (ttl=${ticket.ttlSeconds}s, ${String(ticket.ticket || '').length} chars); connecting`,
     wsUrl.replace(/ticket=[^&]+/, `ticket=<${String(ticket.ticket || '').length} chars>`),
   );
-  const client = createGatewayClient();
+  const client = createGatewayClient({ WebSocketImpl: panelRuntime.WebSocket });
   try {
     await client.connect(wsUrl);
   } catch (error) {
@@ -6129,7 +6139,7 @@ async function readJsonResponse(response) {
 async function publicApiFetch(path, options = {}) {
   const base = normalizeGatewayUrl(settings.gatewayUrl);
   const hasBody = typeof options.body !== 'undefined';
-  return fetch(`${base}${path}`, {
+  return runtimeFetch(`${base}${path}`, {
     ...options,
     headers: {
       ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
@@ -7265,15 +7275,27 @@ async function runStartupReadiness() {
   }
 }
 
-bindEvents();
-await runStartupReadiness();
-try {
-  await refreshContext();
-} catch (error) {
-  setStatus('warn', 'Context refresh unavailable', error?.message || String(error));
+async function startPanel() {
+  bindEvents();
+  await runStartupReadiness();
+  try {
+    await refreshContext();
+  } catch (error) {
+    setStatus('warn', 'Context refresh unavailable', error?.message || String(error));
+  }
+  updateConnectionPrompt();
+  renderVersionInfo();
+  renderContextScopeControls();
+  updateVoiceButtonState();
+  renderEmptyState();
 }
-updateConnectionPrompt();
-renderVersionInfo();
-renderContextScopeControls();
-updateVoiceButtonState();
-renderEmptyState();
+
+startPanel().catch((error) => {
+  console.error('[Hermes Browser] panel initialization failed', error);
+  try {
+    setStatus('error', 'Panel initialization failed', error?.message || String(error));
+    renderEmptyState();
+  } catch {
+    // The panel may have failed before its status elements were available.
+  }
+});
