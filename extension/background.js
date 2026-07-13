@@ -5,10 +5,23 @@ import {
   PANEL_RESIDENCY_MODES,
 } from './lib/panel-residency.mjs';
 import {
+  BROWSER_IDS,
   detectBrowserId,
   openNativeSidebar,
   setActionClickPanelBehavior as setPanelBehaviorForBrowser,
 } from './lib/browser-runtime.mjs';
+import {
+  canInjectSidebar,
+  DEFAULT_SIDEBAR_PRESENTATION,
+  normalizeSidebarPresentation,
+  READY_TIMEOUT_MS as SIDEBAR_READY_TIMEOUT_MS,
+  SIDEBAR_MESSAGES,
+  SIDEBAR_PRESENTATION,
+} from './lib/injected-sidebar.mjs';
+
+// Allow the content script's own READY timeout to elapse before we give up on
+// it, otherwise we would race it and fall back while the mount is still viable.
+const SIDEBAR_MOUNT_TIMEOUT_MS = SIDEBAR_READY_TIMEOUT_MS + 1500;
 import {
   normalizeTranscriptPayload,
   parseTimedTextXml,
@@ -106,6 +119,47 @@ function reapplyPanelResidencyForTab(tabId) {
     .catch((error) => console.warn('[Hermes Browser] Could not apply panel residency setting:', error));
 }
 
+async function injectedSidebarPreferred() {
+  try {
+    const stored = await chrome.storage.local.get(['hermesBrowserSettings', 'sidebarPresentation']);
+    const value = stored?.hermesBrowserSettings?.sidebarPresentation
+      ?? stored?.sidebarPresentation
+      ?? DEFAULT_SIDEBAR_PRESENTATION;
+    return normalizeSidebarPresentation(value) === SIDEBAR_PRESENTATION.INJECTED;
+  } catch {
+    return normalizeSidebarPresentation(DEFAULT_SIDEBAR_PRESENTATION) === SIDEBAR_PRESENTATION.INJECTED;
+  }
+}
+
+/**
+ * Ask the content script to mount (or unmount) the in-page sidebar.
+ *
+ * Returns false — meaning "fall back to the detached window" — when the tab has
+ * no content script (Safari start page, PDF, about:, another extension), when
+ * the page's CSP blocked our iframe, or when the content script never answers.
+ * The timeout guards the last case: chrome.tabs.sendMessage rejects when there
+ * is no receiver, but hangs if a receiver exists and never responds.
+ */
+async function tryInjectedSidebar(tab, panelPath) {
+  const tabId = Number(tab?.id);
+  if (!Number.isFinite(tabId) || tabId <= 0) return false;
+  if (!canInjectSidebar(tab?.url)) return false;
+
+  try {
+    const response = await Promise.race([
+      chrome.tabs.sendMessage(tabId, {
+        type: SIDEBAR_MESSAGES.TOGGLE,
+        url: chrome.runtime.getURL(panelPath),
+      }),
+      new Promise((resolve) => setTimeout(() => resolve(null), SIDEBAR_MOUNT_TIMEOUT_MS)),
+    ]);
+    return Boolean(response?.ok);
+  } catch {
+    // No content script in this tab — restricted page. Fall back.
+    return false;
+  }
+}
+
 async function openHermesPanel(tab) {
   await refreshPanelResidencyModeFromStorage();
   const panelResidencyMode = cachedPanelResidencyMode;
@@ -117,6 +171,13 @@ async function openHermesPanel(tab) {
     tabId: useTabAttached ? tabId : null,
     defaultPath: defaultPanelPath,
   });
+
+  // Safari has no sidebar API at all, so prefer the in-page injected sidebar and
+  // fall back to the detached window when it cannot mount (non-web page, or the
+  // page's CSP refuses our iframe).
+  if (detectBrowserId() === BROWSER_IDS.SAFARI && await injectedSidebarPreferred()) {
+    if (await tryInjectedSidebar(tab, panelPath)) return;
+  }
 
   // Try Opera/Firefox native sidebar first.
   const opened = await openNativeSidebar({ windowId: tab?.windowId ?? null });

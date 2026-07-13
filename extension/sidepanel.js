@@ -80,6 +80,7 @@ import {
 } from './lib/common.mjs';
 import { extractYouTubeVideoId } from './lib/transcript.mjs';
 import { isSafari } from './lib/browser-runtime.mjs';
+import { normalizeSidebarPresentation } from './lib/injected-sidebar.mjs';
 import { buildDashboardWsUrl, createGatewayClient, WS_EVENTS, WS_METHODS } from './lib/gateway-ws.mjs';
 import {
   dashboardTrustPrompt,
@@ -274,6 +275,8 @@ const els = {
   includePageTextInput: $('#includePageTextInput'),
   includeSelectedTextInput: $('#includeSelectedTextInput'),
   panelResidencyInputs: Array.from(document.querySelectorAll('input[name="panelResidencyMode"]')),
+  sidebarPresentationInputs: Array.from(document.querySelectorAll('input[name="sidebarPresentation"]')),
+  sidebarPresentationGroup: $('#sidebarPresentationGroup'),
   autoNameSessionsInput: $('#autoNameSessionsInput'),
   transcriptProviderInput: $('#transcriptProviderInput'),
   profileSelect: $('#profileSelect'),
@@ -4880,6 +4883,12 @@ function syncSettingsForm() {
   for (const input of els.panelResidencyInputs || []) {
     input.checked = input.value === normalizePanelResidencyMode(settings.panelResidencyMode);
   }
+  // The injected sidebar only exists on Safari — every other supported browser
+  // has a native sidebar API, so the choice is meaningless there.
+  if (els.sidebarPresentationGroup) els.sidebarPresentationGroup.hidden = !isSafari();
+  for (const input of els.sidebarPresentationInputs || []) {
+    input.checked = input.value === normalizeSidebarPresentation(settings.sidebarPresentation);
+  }
   if (els.autoNameSessionsInput) els.autoNameSessionsInput.checked = settings.autoNameSessions !== false;
   if (els.agentHostInput) els.agentHostInput.value = settings.agentDiscoveryHost || DEFAULT_SETTINGS.agentDiscoveryHost;
   if (els.agentSchemeInput) els.agentSchemeInput.value = normalizeAgentDiscoveryScheme(settings.agentDiscoveryScheme || DEFAULT_SETTINGS.agentDiscoveryScheme);
@@ -4934,6 +4943,7 @@ async function saveSettingsFromForm() {
     includePageText: els.includePageTextInput.checked,
     includeSelectedText: els.includeSelectedTextInput.checked,
     panelResidencyMode: normalizePanelResidencyMode(els.panelResidencyInputs?.find((input) => input.checked)?.value || settings.panelResidencyMode),
+    sidebarPresentation: normalizeSidebarPresentation(els.sidebarPresentationInputs?.find((input) => input.checked)?.value || settings.sidebarPresentation),
     autoNameSessions: els.autoNameSessionsInput ? els.autoNameSessionsInput.checked : settings.autoNameSessions !== false,
     agentDiscoveryHost: normalizeAgentDiscoveryHost(els.agentHostInput?.value || settings.agentDiscoveryHost || DEFAULT_SETTINGS.agentDiscoveryHost),
     agentDiscoveryScheme: normalizeAgentDiscoveryScheme(els.agentSchemeInput?.value || settings.agentDiscoveryScheme || DEFAULT_SETTINGS.agentDiscoveryScheme),
@@ -7231,3 +7241,19 @@ renderVersionInfo();
 renderContextScopeControls();
 updateVoiceButtonState();
 renderEmptyState();
+
+// --- Injected sidebar handshake ---------------------------------------------
+// When the panel runs inside the in-page sidebar (content.js mounts it in an
+// iframe), announce that we actually loaded. The content script cannot infer
+// this from the iframe's `load` event: a page whose CSP `frame-src` blocks us
+// still fires `load` for about:blank. Without this ping the content script
+// times out and falls back to the detached window — which is exactly the
+// desired behaviour when we genuinely are blocked, and must not happen when we
+// are not. Harmless in a tab or detached window, where parent === self.
+if (globalThis.parent && globalThis.parent !== globalThis) {
+  try {
+    globalThis.parent.postMessage({ type: 'HERMES_SIDEBAR_READY' }, '*');
+  } catch {
+    /* cross-origin parent — the mount will time out and fall back */
+  }
+}

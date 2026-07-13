@@ -454,7 +454,179 @@ function cancelPickMode() {
   return { ok: true };
 }
 
+// --- Injected sidebar -------------------------------------------------------
+// Safari has no sidebar API, so mount sidepanel.html in an iframe pinned to the
+// right edge of the page. Mirrors extension/lib/injected-sidebar.mjs — this is a
+// classic content script and cannot import it. tests/injected-sidebar.test.mjs
+// asserts the two copies stay in sync.
+const SIDEBAR_MESSAGES = Object.freeze({
+  TOGGLE: 'HERMES_TOGGLE_SIDEBAR',
+  READY: 'HERMES_SIDEBAR_READY',
+  CLOSE: 'HERMES_SIDEBAR_CLOSE',
+});
+const SIDEBAR_HOST_ID = 'hermes-browser-sidebar-host';
+const SIDEBAR_READY_TIMEOUT_MS = 2500;
+const SIDEBAR_WIDTH = Object.freeze({
+  DEFAULT: 420,
+  MIN: 320,
+  MAX: 900,
+  STORAGE_KEY: 'hermesBrowserSidebarWidth',
+});
+
+function clampSidebarWidth(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return SIDEBAR_WIDTH.DEFAULT;
+  return Math.min(SIDEBAR_WIDTH.MAX, Math.max(SIDEBAR_WIDTH.MIN, Math.round(numeric)));
+}
+
+function sidebarHost() {
+  return document.getElementById(SIDEBAR_HOST_ID);
+}
+
+function unmountSidebar() {
+  const host = sidebarHost();
+  if (!host) return false;
+  host.remove();
+  return true;
+}
+
+async function storedSidebarWidth() {
+  try {
+    const stored = await chrome.storage.local.get([SIDEBAR_WIDTH.STORAGE_KEY]);
+    return clampSidebarWidth(stored?.[SIDEBAR_WIDTH.STORAGE_KEY]);
+  } catch {
+    return SIDEBAR_WIDTH.DEFAULT;
+  }
+}
+
+function persistSidebarWidth(width) {
+  try {
+    chrome.storage.local.set({ [SIDEBAR_WIDTH.STORAGE_KEY]: clampSidebarWidth(width) });
+  } catch {
+    /* storage is best-effort; a failed width save must not break the sidebar */
+  }
+}
+
+/**
+ * Mount the panel as an in-page sidebar.
+ *
+ * Resolves { ok: true } only once the panel confirms it actually loaded. A page
+ * whose CSP `frame-src` forbids our iframe can still fire a `load` event (for
+ * about:blank), so a load event alone cannot tell "mounted" from "blocked" —
+ * we require an explicit READY handshake from the panel instead, and treat the
+ * timeout as blocked so the caller can fall back to the detached window.
+ */
+function mountSidebar(panelUrl, width) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('message', onPanelMessage);
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    const host = document.createElement('div');
+    host.id = SIDEBAR_HOST_ID;
+    // The host itself carries no layout: it is a fixed, full-height strip on the
+    // right. Overlay rather than reflow — pushing the page (margin/transform)
+    // breaks fixed and absolutely positioned layouts on a huge number of sites.
+    host.style.cssText = [
+      'position:fixed', 'top:0', 'right:0', 'height:100vh',
+      `width:${width}px`, 'z-index:2147483647',
+      'border:0', 'margin:0', 'padding:0',
+      'color-scheme:normal',
+    ].join(';');
+
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `
+      <style>
+        :host { all: initial; }
+        .wrap { position:relative; width:100%; height:100%;
+                box-shadow:-2px 0 12px rgba(0,0,0,.18); background:#000; display:flex; }
+        .grip { position:absolute; left:0; top:0; width:8px; height:100%;
+                cursor:ew-resize; z-index:2; background:transparent; }
+        .grip:hover { background:rgba(127,127,127,.35); }
+        .close { position:absolute; top:6px; left:12px; z-index:3;
+                 width:22px; height:22px; line-height:20px; text-align:center;
+                 border-radius:6px; border:1px solid rgba(127,127,127,.4);
+                 background:rgba(20,20,20,.75); color:#eee; cursor:pointer;
+                 font:13px/20px -apple-system,system-ui,sans-serif; padding:0; }
+        .close:hover { background:rgba(60,60,60,.95); }
+        iframe { flex:1; width:100%; height:100%; border:0; display:block; }
+      </style>
+      <div class="wrap">
+        <div class="grip" part="grip"></div>
+        <button class="close" title="Close Hermes" aria-label="Close Hermes">&times;</button>
+        <iframe title="Hermes Browser" allow="clipboard-write; microphone"></iframe>
+      </div>
+    `;
+
+    const iframe = shadow.querySelector('iframe');
+    const grip = shadow.querySelector('.grip');
+    const closeButton = shadow.querySelector('.close');
+
+    const onPanelMessage = (event) => {
+      // Verify by source, not origin: a blocked/sandboxed frame can report a
+      // null origin, and the extension origin differs per install on Safari.
+      if (event.source !== iframe.contentWindow) return;
+      const type = event.data?.type;
+      if (type === SIDEBAR_MESSAGES.READY) finish({ ok: true, mounted: true });
+      if (type === SIDEBAR_MESSAGES.CLOSE) unmountSidebar();
+    };
+    window.addEventListener('message', onPanelMessage);
+
+    closeButton.addEventListener('click', () => unmountSidebar());
+
+    // Drag-to-resize. Pointer capture keeps events coming while the cursor is
+    // over the iframe, which would otherwise swallow them.
+    grip.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      grip.setPointerCapture(event.pointerId);
+      const startX = event.clientX;
+      const startWidth = host.getBoundingClientRect().width;
+      iframe.style.pointerEvents = 'none';
+
+      const onMove = (moveEvent) => {
+        const next = clampSidebarWidth(startWidth + (startX - moveEvent.clientX));
+        host.style.width = `${next}px`;
+      };
+      const onUp = () => {
+        grip.removeEventListener('pointermove', onMove);
+        grip.removeEventListener('pointerup', onUp);
+        iframe.style.pointerEvents = '';
+        persistSidebarWidth(host.getBoundingClientRect().width);
+      };
+      grip.addEventListener('pointermove', onMove);
+      grip.addEventListener('pointerup', onUp);
+    });
+
+    const timer = setTimeout(() => {
+      // No handshake: the page's CSP almost certainly refused the frame.
+      unmountSidebar();
+      finish({ ok: false, blocked: true });
+    }, SIDEBAR_READY_TIMEOUT_MS);
+
+    // documentElement, not body: body can be missing or replaced by the page.
+    (document.documentElement || document.body).appendChild(host);
+    iframe.src = panelUrl;
+  });
+}
+
+async function toggleSidebar(panelUrl) {
+  if (unmountSidebar()) return { ok: true, mounted: false };
+  if (!panelUrl) return { ok: false, error: 'missing panel url' };
+  return mountSidebar(panelUrl, await storedSidebarWidth());
+}
+
 const messageListener = (message, _sender, sendResponse) => {
+  if (message?.type === SIDEBAR_MESSAGES.TOGGLE) {
+    toggleSidebar(message.url)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+    return true;
+  }
   if (message?.type === 'HERMES_GET_PAGE_CONTEXT') {
     try {
       sendResponse(collectContext(message.options || {}));

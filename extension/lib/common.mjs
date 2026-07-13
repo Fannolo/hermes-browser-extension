@@ -85,6 +85,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
   appearanceTheme: 'nous',
   textSize: 'default',
   panelResidencyMode: 'tab-attached',
+  // Safari only: 'injected' mounts the panel in-page as a real sidebar and falls
+  // back to the detached window when a page blocks it; 'window' always uses the
+  // detached window. Ignored on browsers that have a native sidebar API.
+  sidebarPresentation: 'injected',
   maxTabs: 12,
   maxLocalMessages: 40,
   customModelSources: [],
