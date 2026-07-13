@@ -500,10 +500,15 @@ async function storedSidebarWidth() {
 }
 
 function persistSidebarWidth(width) {
+  // Width is cosmetic: never let a storage failure surface to the user or break
+  // the sidebar. storage.local.set is async, so a synchronous try/catch alone
+  // would let a rejection escape as an unhandled rejection — Safari rejects
+  // these writes from page contexts more readily than Chromium does.
   try {
-    chrome.storage.local.set({ [SIDEBAR_WIDTH.STORAGE_KEY]: clampSidebarWidth(width) });
+    const result = chrome.storage.local.set({ [SIDEBAR_WIDTH.STORAGE_KEY]: clampSidebarWidth(width) });
+    if (result && typeof result.catch === 'function') result.catch(() => {});
   } catch {
-    /* storage is best-effort; a failed width save must not break the sidebar */
+    /* best-effort */
   }
 }
 

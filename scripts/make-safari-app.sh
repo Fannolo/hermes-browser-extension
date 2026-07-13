@@ -87,19 +87,53 @@ open(path, 'w').write(out)
 print(f'  patched: ENABLE_OUTGOING_NETWORK_CONNECTIONS now set on {n} configs')
 PY
 
-echo "==> 3/3  Building the app (ad-hoc signed)"
+# Signing. Set DEVELOPMENT_TEAM to your Apple Team ID to produce a properly
+# signed build; leave it empty to fall back to ad-hoc.
+#
+# Ad-hoc builds are second-class on Safari in ways that are not obvious:
+# Safari keys an extension's storage container to its signing identity, so an
+# ad-hoc build (TeamIdentifier=not set) has no stable identity. That shows up as
+# `browser.storage.local.set()` failing with "Disk I/O error", and as a fresh
+# safari-web-extension://<UUID> on every reinstall — which silently invalidates
+# any CORS allowlist keyed to that origin on the Hermes side.
+#
+#   DEVELOPMENT_TEAM=XXXXXXXXXX ./scripts/make-safari-app.sh --install
+#
+# Find yours with:  security find-identity -v -p codesigning
+DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-}"
+
+echo "==> 3/3  Building the app"
 rm -rf "$DERIVED"
-xcodebuild \
-  -project "${PROJECT_DIR}/${APP_NAME}/${APP_NAME}.xcodeproj" \
-  -scheme "$APP_NAME" \
-  -configuration Release \
-  -derivedDataPath "$DERIVED" \
-  CODE_SIGN_IDENTITY="-" \
-  CODE_SIGN_STYLE=Manual \
-  DEVELOPMENT_TEAM="" \
-  CODE_SIGNING_REQUIRED=YES \
-  CODE_SIGNING_ALLOWED=YES \
-  build
+
+if [[ -n "$DEVELOPMENT_TEAM" ]]; then
+  echo "    signing with team ${DEVELOPMENT_TEAM} (stable identity: storage + a stable extension origin)"
+  xcodebuild \
+    -project "${PROJECT_DIR}/${APP_NAME}/${APP_NAME}.xcodeproj" \
+    -scheme "$APP_NAME" \
+    -configuration Release \
+    -derivedDataPath "$DERIVED" \
+    CODE_SIGN_STYLE=Automatic \
+    DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+    CODE_SIGNING_REQUIRED=YES \
+    CODE_SIGNING_ALLOWED=YES \
+    build
+else
+  echo "    WARNING: no DEVELOPMENT_TEAM set — building ad-hoc."
+  echo "    Safari will not give an ad-hoc extension a stable identity:"
+  echo "      - browser.storage.local can fail with 'Disk I/O error'"
+  echo "      - the extension origin (UUID) changes on every reinstall"
+  xcodebuild \
+    -project "${PROJECT_DIR}/${APP_NAME}/${APP_NAME}.xcodeproj" \
+    -scheme "$APP_NAME" \
+    -configuration Release \
+    -derivedDataPath "$DERIVED" \
+    CODE_SIGN_IDENTITY="-" \
+    CODE_SIGN_STYLE=Manual \
+    DEVELOPMENT_TEAM="" \
+    CODE_SIGNING_REQUIRED=YES \
+    CODE_SIGNING_ALLOWED=YES \
+    build
+fi
 
 APP_PATH="${DERIVED}/Build/Products/Release/${APP_NAME}.app"
 echo
