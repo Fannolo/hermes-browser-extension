@@ -1,3 +1,12 @@
+/**
+ * Wrapped in an IIFE so the script can be injected more than once into the same
+ * tab. background.js injects it on demand for tabs that were open before the
+ * extension loaded; without a fresh scope, re-running the file would redeclare
+ * its top-level consts and throw a SyntaxError, leaving the new listener
+ * unregistered — the sidebar would then silently time out and fall back to a
+ * detached window. The listener swap below dedupes the handlers themselves.
+ */
+(() => {
 const CONTENT_SCRIPT_VERSION = '2026-07-06-element-picker-classic';
 const previousListener = globalThis.__HERMES_BROWSER_CONTENT_LISTENER__;
 if (previousListener) {
@@ -617,14 +626,29 @@ function mountSidebar(panelUrl, width) {
       grip.addEventListener('pointerup', onUp);
     });
 
+    iframe.addEventListener('error', (event) => {
+      console.warn('[Hermes Browser] sidebar iframe failed to load', panelUrl, event);
+    });
+
     const timer = setTimeout(() => {
-      // No handshake: the page's CSP almost certainly refused the frame.
+      // No handshake. Either the page's CSP refused the frame, or the extension
+      // page refused to be framed by a web page.
+      console.warn(
+        '[Hermes Browser] sidebar did not confirm within %dms — falling back to a window.\n'
+        + 'panel url: %s\n'
+        + 'iframe still in DOM: %s\n'
+        + 'Look above for a CSP / "Refused to display" / "frame-ancestors" error.',
+        SIDEBAR_READY_TIMEOUT_MS,
+        panelUrl,
+        Boolean(sidebarHost()),
+      );
       unmountSidebar();
       finish({ ok: false, blocked: true });
     }, SIDEBAR_READY_TIMEOUT_MS);
 
     // documentElement, not body: body can be missing or replaced by the page.
     (document.documentElement || document.body).appendChild(host);
+    console.info('[Hermes Browser] mounting sidebar iframe:', panelUrl);
     iframe.src = panelUrl;
   });
 }
@@ -698,3 +722,4 @@ const messageListener = (message, _sender, sendResponse) => {
 
 chrome.runtime.onMessage.addListener(messageListener);
 globalThis.__HERMES_BROWSER_CONTENT_LISTENER__ = messageListener;
+})();
