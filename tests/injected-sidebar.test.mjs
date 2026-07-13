@@ -142,3 +142,22 @@ test('content.js is safe to inject twice', () => {
   assert.match(contentSource, /__HERMES_BROWSER_CONTENT_LISTENER__/);
   assert.match(contentSource, /removeListener\(previousListener\)/);
 });
+
+test('sidepanel.html is web-accessible so it can load in an in-page iframe', () => {
+  // Without this the browser refuses to load the panel from a page context and
+  // the sidebar renders nothing at all — no error, just an empty frame.
+  const manifest = JSON.parse(readFileSync(new URL('../extension/manifest.json', import.meta.url), 'utf8'));
+  const war = manifest.web_accessible_resources;
+  assert.ok(Array.isArray(war) && war.length, 'manifest must declare web_accessible_resources');
+  const entry = war.find((item) => (item.resources || []).includes('sidepanel.html'));
+  assert.ok(entry, 'sidepanel.html must be web-accessible');
+  assert.deepEqual(entry.matches, ['http://*/*', 'https://*/*'], 'exposed only to the pages the content script runs on');
+});
+
+test('the Safari build keeps web_accessible_resources', () => {
+  const source = readFileSync(new URL('../scripts/build-safari.mjs', import.meta.url), 'utf8');
+  assert.ok(
+    !/delete sourceManifest\.web_accessible_resources/.test(source),
+    'the Safari build must not strip web_accessible_resources — the injected sidebar needs it',
+  );
+});
