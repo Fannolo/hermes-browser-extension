@@ -680,6 +680,13 @@ async function ensureSidebar(panelUrl) {
 }
 
 const messageListener = (message, _sender, sendResponse) => {
+  // Answer "are you there?" so callers can skip chrome.scripting.executeScript.
+  // On Safari that call reloads the page to inject, which would destroy an
+  // injected sidebar living in that same page. See ensureContentScript().
+  if (message?.type === 'HERMES_PING') {
+    sendResponse({ ok: true, version: CONTENT_SCRIPT_VERSION });
+    return true;
+  }
   if (message?.type === SIDEBAR_MESSAGES.TOGGLE || message?.type === SIDEBAR_MESSAGES.ENSURE) {
     const run = message.type === SIDEBAR_MESSAGES.ENSURE ? ensureSidebar : toggleSidebar;
     run(message.url)

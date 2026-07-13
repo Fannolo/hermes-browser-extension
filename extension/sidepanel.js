@@ -5012,7 +5012,26 @@ async function tabsForCurrentScope() {
   }
 }
 
+/**
+ * Inject content.js into a tab — but only if it is not already there.
+ *
+ * The ping is not an optimisation. On Safari, chrome.scripting.executeScript()
+ * with `files` reloads the target page to perform the injection. The manifest
+ * already registers content.js on every http(s) page, so this call is almost
+ * always redundant — and when the panel runs inside the injected sidebar, the
+ * "target tab" is the very page hosting it. Injecting there reloads the host
+ * page, which destroys the sidebar, which times out and falls back to a detached
+ * window. The panel would kill its own sidebar on every open.
+ *
+ * So: ask first, inject only if nobody answers.
+ */
 async function ensureContentScript(tabId) {
+  try {
+    const pong = await chrome.tabs.sendMessage(tabId, { type: 'HERMES_PING' });
+    if (pong?.ok) return;
+  } catch {
+    // No listener — the content script really is absent. Fall through and inject.
+  }
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
   } catch (_error) {

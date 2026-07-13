@@ -251,6 +251,11 @@ async function tryInjectedSidebar(tab, panelPath) {
     // No receiver: this tab was loaded before the extension was installed or
     // updated, so it is still running an old content script — or none at all.
     // Inject it now rather than making the user reload the page.
+    //
+    // This is safe *here* precisely because sendSidebarToggle above already
+    // failed: on Safari executeScript reloads the target page to inject, so it
+    // must never run against a tab whose content script is alive — it would
+    // reload the page out from under a sidebar that was about to mount.
     try {
       await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
     } catch (injectError) {

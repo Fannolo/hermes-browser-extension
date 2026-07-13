@@ -180,3 +180,23 @@ test('the Safari build keeps web_accessible_resources', () => {
     'the Safari build must not strip web_accessible_resources — the injected sidebar needs it',
   );
 });
+
+test('the panel pings before injecting the content script', () => {
+  // On Safari chrome.scripting.executeScript({files}) RELOADS the target page to
+  // perform the injection. When the panel runs inside the injected sidebar, the
+  // target tab is the page hosting it — so a blind inject reloads the host page,
+  // destroys the sidebar, and falls back to a window. Every open. Ping first.
+  const panel = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+  const ensure = panel.slice(panel.indexOf('async function ensureContentScript'));
+  const body = ensure.slice(0, ensure.indexOf('\n}\n') + 3);
+  const pingAt = body.indexOf("type: 'HERMES_PING'");
+  const injectAt = body.indexOf('executeScript');
+  assert.ok(pingAt > -1, 'ensureContentScript must ping the content script first');
+  assert.ok(injectAt > -1, 'ensureContentScript must still be able to inject');
+  assert.ok(pingAt < injectAt, 'the ping must come before the injection');
+});
+
+test('the content script answers the ping', () => {
+  assert.match(contentSource, /message\?\.type === 'HERMES_PING'/);
+  assert.match(contentSource, /sendResponse\(\{ ok: true, version: CONTENT_SCRIPT_VERSION \}\)/);
+});
