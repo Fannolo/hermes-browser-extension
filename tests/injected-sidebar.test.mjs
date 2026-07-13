@@ -88,8 +88,9 @@ test('background gives the content script longer than its own READY timeout', ()
   assert.match(backgroundSource, /SIDEBAR_READY_TIMEOUT_MS \+ \d+/);
 });
 
-test('background bails out of injection on tabs with no content script', () => {
-  assert.match(backgroundSource, /if \(!canInjectSidebar\(tab\?\.url\)\) return false;/);
+test('background bails out of injection on pages that cannot host it', () => {
+  assert.match(backgroundSource, /if \(!canInjectSidebar\(tab\?\.url\)\) \{/);
+  assert.match(backgroundSource, /Injected sidebar unavailable on this page/);
 });
 
 // --- Pure helpers -----------------------------------------------------------
@@ -127,4 +128,17 @@ test('the presentation setting ships with a default', async () => {
     normalizeSidebarPresentation(DEFAULT_SETTINGS.sidebarPresentation),
     SIDEBAR_PRESENTATION.INJECTED,
   );
+});
+
+test('background injects the content script on demand instead of requiring a page reload', () => {
+  // Tabs opened before the extension was installed/updated have a stale content
+  // script or none. Reloading must not be the user's job.
+  assert.match(backgroundSource, /chrome\.scripting\.executeScript\(\{ target: \{ tabId \}, files: \['content\.js'\] \}\)/);
+  assert.match(backgroundSource, /const retry = await sendSidebarToggle\(tabId, panelPath\)/);
+});
+
+test('content.js is safe to inject twice', () => {
+  // On-demand injection can land on a tab that already has the script.
+  assert.match(contentSource, /__HERMES_BROWSER_CONTENT_LISTENER__/);
+  assert.match(contentSource, /removeListener\(previousListener\)/);
 });

@@ -140,23 +140,50 @@ async function injectedSidebarPreferred() {
  * The timeout guards the last case: chrome.tabs.sendMessage rejects when there
  * is no receiver, but hangs if a receiver exists and never responds.
  */
+async function sendSidebarToggle(tabId, panelPath) {
+  return Promise.race([
+    chrome.tabs.sendMessage(tabId, {
+      type: SIDEBAR_MESSAGES.TOGGLE,
+      url: chrome.runtime.getURL(panelPath),
+    }),
+    new Promise((resolve) => setTimeout(() => resolve(null), SIDEBAR_MOUNT_TIMEOUT_MS)),
+  ]);
+}
+
 async function tryInjectedSidebar(tab, panelPath) {
   const tabId = Number(tab?.id);
   if (!Number.isFinite(tabId) || tabId <= 0) return false;
-  if (!canInjectSidebar(tab?.url)) return false;
+  if (!canInjectSidebar(tab?.url)) {
+    console.info('[Hermes Browser] Injected sidebar unavailable on this page; using a window.', tab?.url);
+    return false;
+  }
 
   try {
-    const response = await Promise.race([
-      chrome.tabs.sendMessage(tabId, {
-        type: SIDEBAR_MESSAGES.TOGGLE,
-        url: chrome.runtime.getURL(panelPath),
-      }),
-      new Promise((resolve) => setTimeout(() => resolve(null), SIDEBAR_MOUNT_TIMEOUT_MS)),
-    ]);
-    return Boolean(response?.ok);
-  } catch {
-    // No content script in this tab — restricted page. Fall back.
+    const response = await sendSidebarToggle(tabId, panelPath);
+    if (response?.ok) return true;
+    if (response?.blocked) {
+      console.info('[Hermes Browser] Page CSP blocked the sidebar iframe; using a window instead.');
+      return false;
+    }
+    if (response) return false;
+    console.warn('[Hermes Browser] Sidebar mount timed out; using a window instead.');
     return false;
+  } catch {
+    // No receiver: this tab was loaded before the extension was installed or
+    // updated, so it is still running an old content script — or none at all.
+    // Inject it now rather than making the user reload the page.
+    try {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    } catch (injectError) {
+      console.info('[Hermes Browser] Could not inject the content script; using a window.', injectError?.message || injectError);
+      return false;
+    }
+    try {
+      const retry = await sendSidebarToggle(tabId, panelPath);
+      return Boolean(retry?.ok);
+    } catch {
+      return false;
+    }
   }
 }
 
