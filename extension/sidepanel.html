@@ -522,6 +522,9 @@
       </article>
     </template>
 
+    <!-- Must load before sidepanel.js: the injected-sidebar handshake has to
+         survive any error in the panel's own startup. See sidebar-ready.js. -->
+    <script src="sidebar-ready.js"></script>
     <script type="module" src="sidepanel.js"></script>
   </body>
 </html>

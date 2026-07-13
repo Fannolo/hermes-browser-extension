@@ -7242,18 +7242,3 @@ renderContextScopeControls();
 updateVoiceButtonState();
 renderEmptyState();
 
-// --- Injected sidebar handshake ---------------------------------------------
-// When the panel runs inside the in-page sidebar (content.js mounts it in an
-// iframe), announce that we actually loaded. The content script cannot infer
-// this from the iframe's `load` event: a page whose CSP `frame-src` blocks us
-// still fires `load` for about:blank. Without this ping the content script
-// times out and falls back to the detached window — which is exactly the
-// desired behaviour when we genuinely are blocked, and must not happen when we
-// are not. Harmless in a tab or detached window, where parent === self.
-if (globalThis.parent && globalThis.parent !== globalThis) {
-  try {
-    globalThis.parent.postMessage({ type: 'HERMES_SIDEBAR_READY' }, '*');
-  } catch {
-    /* cross-origin parent — the mount will time out and fall back */
-  }
-}

@@ -16,7 +16,8 @@ import {
 
 const contentSource = readFileSync(new URL('../extension/content.js', import.meta.url), 'utf8');
 const backgroundSource = readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8');
-const panelSource = readFileSync(new URL('../extension/sidepanel.js', import.meta.url), 'utf8');
+const readySource = readFileSync(new URL('../extension/sidebar-ready.js', import.meta.url), 'utf8');
+const panelHtml = readFileSync(new URL('../extension/sidepanel.html', import.meta.url), 'utf8');
 
 // --- The duplicated contract ------------------------------------------------
 // content.js is a classic content script and cannot import the module, so it
@@ -51,8 +52,26 @@ test('content.js mirrors the width bounds', () => {
 // --- Blocked-frame detection ------------------------------------------------
 
 test('the panel announces READY to its parent so a blocked frame can be told from a live one', () => {
-  assert.match(panelSource, /HERMES_SIDEBAR_READY/);
-  assert.match(panelSource, /parent\.postMessage/);
+  assert.match(readySource, /HERMES_SIDEBAR_READY/);
+  assert.match(readySource, /parent\.postMessage/);
+});
+
+test('the handshake loads before sidepanel.js so a panel startup error cannot suppress it', () => {
+  // If the ping lived inside sidepanel.js, any throw in its import graph or init
+  // would time out the mount and silently demote the user to a detached window.
+  // Match the src attributes, not bare filenames — prose in comments would
+  // otherwise satisfy the ordering check.
+  const readyAt = panelHtml.indexOf('src="sidebar-ready.js"');
+  const panelAt = panelHtml.indexOf('src="sidepanel.js"');
+  assert.ok(readyAt > -1, 'sidepanel.html must load sidebar-ready.js');
+  assert.ok(panelAt > -1, 'sidepanel.html must load sidepanel.js');
+  assert.ok(readyAt < panelAt, 'sidebar-ready.js must load before sidepanel.js');
+});
+
+test('the handshake re-announces on DOMContentLoaded and load', () => {
+  // The content script may attach its listener after the frame starts executing.
+  assert.match(readySource, /DOMContentLoaded/);
+  assert.match(readySource, /'load'/);
 });
 
 test('content.js falls back on timeout rather than trusting the iframe load event', () => {
