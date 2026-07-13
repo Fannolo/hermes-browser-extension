@@ -32,6 +32,9 @@ cd "$ROOT"
 
 PROJECT_DIR="build/safari"
 DERIVED="build/dd"
+WRAPPER_VERSION_VALUES="$(node scripts/safari-wrapper-version.mjs)"
+SAFARI_MARKETING_VERSION="${WRAPPER_VERSION_VALUES%% *}"
+SAFARI_BUILD_VERSION="${WRAPPER_VERSION_VALUES##* }"
 
 echo "==> 1/3  Building Safari extension payload (dist/safari)"
 npm run build:safari
@@ -50,17 +53,26 @@ xcrun safari-web-extension-converter dist/safari \
 # stale: Safari 16.4+ supports ES-module service workers ("type": "module").
 # Our manifest floor is 16.4, so it is safe to ignore.
 
-echo "==> 2b/3  Granting the extension outgoing-network access"
+echo "==> 2b/3  Versioning the wrapper and granting outgoing-network access"
 # safari-web-extension-converter sandboxes BOTH targets but sets
 # ENABLE_OUTGOING_NETWORK_CONNECTIONS only on the *containing app*, never on the
 # .appex. The extension is the thing that actually calls fetch(), so without this
 # every request from the panel is silently killed by the App Sandbox — the
 # gateway looks unreachable even though curl to the same URL works fine.
 # There is no converter flag for this, so patch the generated project.
-python3 - "$PROJECT_DIR/$APP_NAME/$APP_NAME.xcodeproj/project.pbxproj" <<'PY'
+python3 - \
+  "$PROJECT_DIR/$APP_NAME/$APP_NAME.xcodeproj/project.pbxproj" \
+  "$SAFARI_MARKETING_VERSION" \
+  "$SAFARI_BUILD_VERSION" <<'PY'
 import re, sys
 
 path = sys.argv[1]
+marketing_version = sys.argv[2]
+build_version = sys.argv[3]
+if not re.fullmatch(r'\d+\.\d+\.\d+', marketing_version):
+    sys.exit(f'Invalid Safari marketing version: {marketing_version}')
+if not re.fullmatch(r'\d+', build_version):
+    sys.exit(f'Invalid Safari build version: {build_version}')
 src = open(path).read()
 
 def patch(block):
@@ -79,12 +91,34 @@ def patch(block):
 
 out = re.sub(r'buildSettings = \{(.*?)\};', patch, src, flags=re.S)
 
+# safari-web-extension-converter emits version 1.0 (build 1) for every app and
+# appex. Duplicate registrations then become indistinguishable to PlugInKit.
+out, marketing_count = re.subn(
+    r'MARKETING_VERSION = [^;]+;',
+    f'MARKETING_VERSION = {marketing_version};',
+    out,
+)
+out, build_count = re.subn(
+    r'CURRENT_PROJECT_VERSION = [^;]+;',
+    f'CURRENT_PROJECT_VERSION = {build_version};',
+    out,
+)
+
 n = out.count('ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;')
 if n < 4:  # app Debug+Release + extension Debug+Release
     sys.exit(f'FAILED to patch network entitlement (found {n}, expected >=4)')
+if marketing_count < 4 or build_count < 4:
+    sys.exit(
+        'FAILED to patch wrapper versions '
+        f'(marketing={marketing_count}, build={build_count}, expected >=4 each)'
+    )
 
 open(path, 'w').write(out)
 print(f'  patched: ENABLE_OUTGOING_NETWORK_CONNECTIONS now set on {n} configs')
+print(
+    f'  patched: wrapper version {marketing_version} ({build_version}) '
+    f'on {marketing_count} configs'
+)
 PY
 
 # Signing. Set DEVELOPMENT_TEAM to your Apple Team ID to produce a properly

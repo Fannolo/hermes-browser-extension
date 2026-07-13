@@ -14,6 +14,11 @@ npm install
 ./scripts/make-safari-app.sh --install
 ```
 
+The converter defaults every generated app and extension wrapper to version
+`1.0` (build `1`). The script replaces those values with a monotonically
+increasing wrapper version derived from `package.json`. This prevents PlugInKit
+from selecting an older registered Hermes build that shares the same bundle ID.
+
 Then do the four GUI steps the script prints (Safari exposes no CLI for them):
 
 1. **Safari > Settings > Advanced** → check *Show features for web developers*
